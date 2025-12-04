@@ -20,31 +20,22 @@ const app = express();
 const downloadDir = path.join(__dirname, 'downloads');
 if (!fs.existsSync(downloadDir)) fs.mkdirSync(downloadDir);
 
-// --- 1. SMART COOKIE REPAIR SYSTEM ---
+// --- 1. COOKIE LOADER ---
 const cookiePath = path.join(__dirname, 'cookies.txt');
-
 if (process.env.REDDIT_COOKIES) {
     let rawData = process.env.REDDIT_COOKIES;
-    
-    // Fix: Render sometimes escapes newlines (e.g., "\n" becomes literal characters)
-    // We force them back to real newlines.
+    // Fix: Un-escape newlines that Render might have broken
     rawData = rawData.replace(/\\n/g, '\n');
-    
-    // Fix: Ensure headers are correct
-    if (!rawData.startsWith('# Netscape')) {
-        rawData = "# Netscape HTTP Cookie File\n" + rawData;
-    }
-
+    if (!rawData.startsWith('# Netscape')) rawData = "# Netscape HTTP Cookie File\n" + rawData;
     fs.writeFileSync(cookiePath, rawData);
-    console.log("✅ Cookies loaded & repaired!");
-} else {
-    console.log("⚠️ No cookies found. Bot might be blocked.");
+    console.log("✅ Cookies loaded!");
 }
 
-// --- 2. MIRRORS (Backup Plan) ---
+// --- 2. MIRRORS (The Backup Plan) ---
 const MIRRORS = [
     'https://redlib.catsarch.com',
     'https://redlib.vlingit.com',
+    'https://redlib.tux.pizza',
     'https://libreddit.kavin.rocks'
 ];
 
@@ -52,28 +43,47 @@ const URL_REGEX = /(https?:\/\/(?:www\.|old\.|mobile\.)?(?:reddit\.com|x\.com|tw
 
 // --- UTILITIES ---
 
-const runYtDlp = async (url) => {
-    // We MUST use the same User-Agent as your browser for cookies to work
-    const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-    
-    let cmd = `yt-dlp --force-ipv4 --no-warnings --no-playlist --user-agent "${ua}" -J "${url}"`;
-    
-    if (fs.existsSync(cookiePath)) {
-        cmd += ` --cookies "${cookiePath}"`;
+// CRITICAL FIX: Expand /s/ links so Mirrors can read them
+const resolveRedirect = async (shortUrl) => {
+    if (!shortUrl.includes('/s/')) return shortUrl;
+    try {
+        console.log("🔄 Resolving short link...");
+        const res = await axios.head(shortUrl, {
+            maxRedirects: 0,
+            validateStatus: (s) => s >= 300 && s < 400,
+            headers: { 
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
+            }
+        });
+        return res.headers.location || shortUrl;
+    } catch (e) {
+        console.log("⚠️ Resolve failed, using original.");
+        return shortUrl;
     }
-    
+};
+
+const runYtDlp = async (url) => {
+    const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+    let cmd = `yt-dlp --force-ipv4 --no-warnings --no-playlist --user-agent "${ua}" -J "${url}"`;
+    if (fs.existsSync(cookiePath)) cmd += ` --cookies "${cookiePath}"`;
     return await execPromise(cmd);
 };
 
-// Mirror Fallback logic
-const getMirrorLink = async (originalUrl) => {
+const getMirrorLink = async (fullUrl) => {
     try {
-        const parsed = new URL(originalUrl);
-        const path = parsed.pathname;
+        const parsed = new URL(fullUrl);
+        // Ensure we remove any query params like ?share_id=...
+        const cleanPath = parsed.pathname; 
+        
         for (const domain of MIRRORS) {
             try {
-                const { data } = await axios.get(`${domain}${path}.json`, { timeout: 4000 });
+                // Append .json to the CLEAN path
+                const apiUrl = `${domain}${cleanPath}.json`;
+                console.log(`🛡️ Checking Mirror: ${apiUrl}`);
+
+                const { data } = await axios.get(apiUrl, { timeout: 4000 });
                 const post = data[0].data.children[0].data;
+                
                 if (post.is_video && post.media?.reddit_video) {
                     return { 
                         title: post.title, 
@@ -83,14 +93,13 @@ const getMirrorLink = async (originalUrl) => {
                 }
             } catch (e) { continue; }
         }
-    } catch (e) { return null; }
+    } catch (e) { console.error("Mirror Error:", e.message); }
     return null;
 };
 
 const downloadMedia = async (url, isAudio, formatId, outputPath) => {
     const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
     let cmd = `yt-dlp --force-ipv4 --no-warnings --user-agent "${ua}"`;
-    
     if (fs.existsSync(cookiePath)) cmd += ` --cookies "${cookiePath}"`;
 
     if (isAudio) {
@@ -104,7 +113,7 @@ const downloadMedia = async (url, isAudio, formatId, outputPath) => {
 
 // --- HANDLERS ---
 
-bot.start((ctx) => ctx.reply("👋 Ready! Cookies Active."));
+bot.start((ctx) => ctx.reply("👋 Ready! Send me a link."));
 
 bot.on('text', async (ctx) => {
     const match = ctx.message.text.match(URL_REGEX);
@@ -113,32 +122,46 @@ bot.on('text', async (ctx) => {
     const msg = await ctx.reply("🔍 *Processing...*", { parse_mode: 'Markdown', reply_to_message_id: ctx.message.message_id });
 
     try {
-        const url = match[0];
-        let info = {};
-        let downloadUrl = url;
-
-        // Try Main Site (With Cookies)
+        // STEP 1: RESOLVE SHORT LINK (Crucial Fix)
+        const originalUrl = match[0];
+        let fullUrl = await resolveRedirect(originalUrl);
+        
+        // Remove tracking params (?share_id=...)
         try {
-            const { stdout } = await runYtDlp(url);
+            const u = new URL(fullUrl);
+            u.search = "";
+            fullUrl = u.toString();
+        } catch(e) {}
+
+        console.log(`🎯 Target: ${fullUrl}`);
+
+        let info = {};
+        let downloadUrl = fullUrl;
+
+        // STEP 2: TRY MAIN SITE (COOKIES)
+        try {
+            const { stdout } = await runYtDlp(fullUrl);
             info = JSON.parse(stdout);
             console.log("✅ Fetched via Main Site");
         } catch (err) {
-            console.log("⚠️ Cookie fetch failed (" + err.message.substring(0, 30) + "...). Trying Mirror.");
-            // Try Mirror
-            if (url.includes('reddit.com')) {
-                const mirrorData = await getMirrorLink(url);
+            console.log("⚠️ Main site failed. Activating Mirror...");
+            
+            // STEP 3: TRY MIRROR (BACKUP)
+            if (fullUrl.includes('reddit.com')) {
+                const mirrorData = await getMirrorLink(fullUrl);
                 if (mirrorData) {
+                    console.log("✅ Fetched via Mirror!");
                     info = { title: mirrorData.title, formats: [], extractor_key: 'Mirror' };
-                    downloadUrl = mirrorData.url;
+                    downloadUrl = mirrorData.url; // Use direct v.redd.it link
                 } else {
-                    throw err;
+                    throw err; // Mirror failed too
                 }
             } else {
                 throw err;
             }
         }
 
-        // Buttons
+        // STEP 4: BUTTONS
         const buttons = [];
         if (info.formats && info.formats.length > 0) {
             const formats = info.formats.filter(f => f.ext === 'mp4' && f.height).sort((a,b) => b.height - a.height);
@@ -155,17 +178,15 @@ bot.on('text', async (ctx) => {
 
         await ctx.telegram.editMessageText(
             ctx.chat.id, msg.message_id, null,
-            `✅ *${(info.title || 'Media').substring(0, 50)}...*\nSource: [Link](${downloadUrl})`,
+            `✅ *${(info.title || 'Media Found').substring(0, 50)}...*\nSource: [Link](${downloadUrl})`,
             { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) }
         );
 
     } catch (err) {
-        console.error("Handler Error:", err.message);
-        let errMsg = "❌ Failed.";
-        if (err.message.includes('Sign in')) errMsg = "❌ Cookies Expired. Update them on Render.";
-        else if (err.message.includes('403')) errMsg = "❌ Access Denied. Cookies invalid.";
-        
-        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, errMsg);
+        console.error("Final Error:", err.message);
+        let text = "❌ Failed. Mirrors are busy.";
+        if (err.message.includes('403')) text = "❌ Blocked. Cookies invalid & Mirrors failed.";
+        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, text);
     }
 });
 
