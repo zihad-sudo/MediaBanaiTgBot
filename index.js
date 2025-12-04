@@ -9,6 +9,8 @@ const FormData = require("form-data");
 const TOKEN = process.env.BOT_TOKEN;
 const API = `https://api.telegram.org/bot${TOKEN}`;
 
+// --- HELPER FUNCTIONS ---
+
 // Send text message
 async function sendMessage(chatId, text) {
     try {
@@ -35,9 +37,11 @@ async function sendDocument(chatId, filePath) {
         });
     } catch (e) {
         console.error("Error sending document:", e);
-        throw e;
+        throw e; // Pass error up
     }
 }
+
+// --- SERVER & BOT LOGIC ---
 
 const server = http.createServer(async (req, res) => {
     if (req.method === "POST") {
@@ -51,53 +55,60 @@ const server = http.createServer(async (req, res) => {
                     const text = update.message.text;
 
                     if (text === "/start") {
-                        await sendMessage(chatId, "👋 Welcome! Send /help to see commands.");
+                        await sendMessage(chatId, "👋 Ready! Send me a link.");
                     } else if (text === "/help") {
-                        await sendMessage(chatId, "Commands:\n/download <URL> - Download media\n/ping - Test bot");
-                    } else if (text.startsWith("/ping")) {
-                        await sendMessage(chatId, "🏓 Pong! Bot is alive.");
-                    } else if (text.startsWith("/download ")) {
-                        const url = text.replace("/download ", "").trim();
-                        if (!url) {
-                            await sendMessage(chatId, "❌ Please provide a URL.");
-                        } else {
-                            await sendMessage(chatId, "⏳ Processing download (Mobile Mode)...");
+                        await sendMessage(chatId, "Simply send a link (Reddit, Twitter, etc) to download.");
+                    } else if (text && text.startsWith("http")) {
+                        // Automatically detect links without needing /download command
+                        const url = text.trim();
+                        
+                        await sendMessage(chatId, "⏳ Downloading...");
 
-                            const tmpFile = path.join("/tmp", `media_${Date.now()}.mp4`);
+                        const tmpFile = path.join("/tmp", `media_${Date.now()}.mp4`);
 
-                            try {
-                                console.log(`Attempting download: ${url}`);
+                        try {
+                            console.log(`Processing: ${url}`);
+
+                            await ytDlp(url, {
+                                output: tmpFile,
+                                ffmpegLocation: ffmpegPath,
                                 
-                                await ytDlp(url, {
-                                    output: tmpFile,
-                                    ffmpegLocation: ffmpegPath,
-                                    
-                                    // SOLUTION: Impersonate the Reddit Android App
-                                    // This bypasses the 403 Blocked error for browsers
-                                    extractorArgs: "reddit:user_agent=android", 
-                                    
-                                    noCheckCertificates: true,
-                                    preferFreeFormats: true,
-                                    format: "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
-                                });
+                                // 1. FORCE IPv4: Cloud servers often have bad IPv6 reputation
+                                forceIpv4: true,
 
-                                if (fs.existsSync(tmpFile) && fs.statSync(tmpFile).size > 0) {
-                                    await sendMessage(chatId, "✅ Download success! Uploading...");
-                                    await sendDocument(chatId, tmpFile);
-                                    fs.unlink(tmpFile, () => {});
-                                } else {
-                                    await sendMessage(chatId, "❌ Failed: File was not downloaded. The server IP might be completely banned.");
-                                }
+                                // 2. BROWSER HEADERS: Mimic a real Chrome user on Windows
+                                addHeader: [
+                                    "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                                    "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                                    "Accept-Language: en-US,en;q=0.5",
+                                    "Sec-Fetch-Mode: navigate",
+                                    "Referer: https://www.google.com/"
+                                ],
 
-                            } catch (err) {
-                                console.error("Error details:", err);
-                                await sendMessage(chatId, `❌ Error: ${err.message}`);
+                                // 3. SETTINGS: lenient settings to prevent crashes
+                                noCheckCertificates: true,
+                                preferFreeFormats: true,
+                                ignoreErrors: true, // Don't crash on minor warnings
+                                format: "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+                            });
+
+                            // Check if file exists and has size
+                            if (fs.existsSync(tmpFile) && fs.statSync(tmpFile).size > 0) {
+                                await sendMessage(chatId, "✅ Uploading to Telegram...");
+                                await sendDocument(chatId, tmpFile);
+                                fs.unlink(tmpFile, () => {}); // Cleanup
+                            } else {
+                                await sendMessage(chatId, "❌ Download failed. The server IP is strictly blocked by this site.");
                             }
+
+                        } catch (err) {
+                            console.error("YT-DLP Error:", err);
+                            await sendMessage(chatId, `❌ Error: ${err.message}`);
                         }
                     }
                 }
             } catch (e) {
-                console.error("Error parsing update:", e);
+                console.error("General Error:", e);
             }
             res.writeHead(200);
             res.end("OK");
