@@ -1,6 +1,6 @@
 /**
  * UNIVERSAL MEDIA DOWNLOADER BOT
- * Fixed for Render Deployment (No top-level await)
+ * Fixed: Renamed URL variable to avoid conflict with Node.js URL constructor
  */
 
 require('dotenv').config();
@@ -10,7 +10,8 @@ const express = require('express');
 
 // --- CONFIGURATION ---
 const BOT_TOKEN = process.env.BOT_TOKEN; 
-const URL = process.env.RENDER_EXTERNAL_URL; 
+// RENAMED VARIABLE TO AVOID CONFLICT
+const APP_URL = process.env.RENDER_EXTERNAL_URL; 
 const PORT = process.env.PORT || 3000;
 
 // Reliable Cobalt Instances
@@ -110,11 +111,13 @@ bot.on('text', async (ctx) => {
 
 // --- SERVER STARTUP (FIXED) ---
 async function startApp() {
-    // We wrap the await in this async function to fix the "Module format" error
-    if (URL) {
-        await bot.createWebhook({ domain: URL });
-        app.use(bot.webhookCallback(new URL(URL).pathname)); // Correct way to attach webhook
-        console.log(`Webhook attached to: ${URL}`);
+    if (APP_URL) {
+        // Use APP_URL here instead of URL
+        await bot.createWebhook({ domain: APP_URL });
+        
+        // Use global URL constructor safely now
+        app.use(bot.webhookCallback(new URL(APP_URL).pathname)); 
+        console.log(`Webhook attached to: ${APP_URL}`);
     } else {
         console.log('No RENDER_EXTERNAL_URL found, running in polling mode for local dev...');
         bot.launch();
