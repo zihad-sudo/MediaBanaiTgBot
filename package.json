@@ -8,7 +8,8 @@
   },
   "dependencies": {
     "telegraf": "^4.16.3",
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
   },
   "engines": {
     "node": ">=18.0.0"
