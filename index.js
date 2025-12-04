@@ -20,21 +20,19 @@ const app = express();
 const downloadDir = path.join(__dirname, 'downloads');
 if (!fs.existsSync(downloadDir)) fs.mkdirSync(downloadDir);
 
-// Regex for Reddit/Twitter
+// Regex
 const URL_REGEX = /(https?:\/\/(?:www\.|old\.|mobile\.)?(?:reddit\.com|x\.com|twitter\.com)\/[^\s]+)/i;
 
 // --- UTILITIES ---
 
-// 1. Resolve /s/ links to full links
+// 1. Resolve Short Links (/s/)
 const resolveRedirect = async (url) => {
     if (!url.includes('/s/')) return url;
     try {
         const res = await axios.head(url, {
             maxRedirects: 0,
             validateStatus: (status) => status >= 300 && status < 400,
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36'
-            }
+            headers: { 'User-Agent': 'Mozilla/5.0 (Linux; Android 10)' }
         });
         return res.headers.location || url;
     } catch (e) {
@@ -42,45 +40,44 @@ const resolveRedirect = async (url) => {
     }
 };
 
-// 2. The "Smart" Downloader
-const runYtDlp = async (targetUrl) => {
-    // Standard User-Agent to look like a Firefox browser
-    const cmd = `yt-dlp --force-ipv4 --no-warnings --no-playlist --add-header "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0" -J "${targetUrl}"`;
-    return await execPromise(cmd);
-};
-
-// 3. Fallback: Get Direct Video Link via JSON API (Bypasses Main Site Block)
-const getRedditApiMetadata = async (webUrl) => {
+// 2. Fallback: Get Direct Video Link via JSON API
+// This bypasses the main reddit.com block
+const getRedditDirectMap = async (webUrl) => {
     try {
-        // Remove query params and append .json
-        const jsonUrl = webUrl.split('?')[0] + '.json';
-        console.log("⚠️ 403 Blocked. Trying API fallback:", jsonUrl);
+        // Clean URL params
+        const cleanUrl = webUrl.split('?')[0];
+        const jsonUrl = cleanUrl.endsWith('/') ? `${cleanUrl}.json` : `${cleanUrl}/.json`;
+        
+        console.log("⚠️ Accessing API:", jsonUrl);
         
         const { data } = await axios.get(jsonUrl, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36' }
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
         });
 
         const post = data[0].data.children[0].data;
         
-        // Check for video
         if (post.secure_media && post.secure_media.reddit_video) {
+            // Found a video! v.redd.it links are NOT blocked by 403
             return {
                 title: post.title,
-                // The DASH url is on v.redd.it which is NOT blocked!
-                url: post.secure_media.reddit_video.dash_url || post.secure_media.reddit_video.fallback_url,
+                url: post.secure_media.reddit_video.fallback_url,
                 is_video: true
             };
-        } else if (post.url && post.url.includes('i.redd.it')) {
-            return { title: post.title, url: post.url, is_video: false };
-        }
+        } 
         return null;
     } catch (e) {
-        console.error("API Fallback failed:", e.message);
+        console.error("API Error:", e.message);
         return null;
     }
 };
 
-// --- BOT HANDLERS ---
+// 3. Downloader
+const runYtDlp = async (targetUrl) => {
+    const cmd = `yt-dlp --force-ipv4 --no-warnings --no-playlist -J "${targetUrl}"`;
+    return await execPromise(cmd);
+};
+
+// --- HANDLERS ---
 
 bot.start((ctx) => ctx.reply("👋 Bot Online. Send a link!"));
 
@@ -91,39 +88,32 @@ bot.on('text', async (ctx) => {
     const msg = await ctx.reply("🔍 *Processing...*", { parse_mode: 'Markdown', reply_to_message_id: ctx.message.message_id });
 
     try {
-        // Step A: Resolve Redirects
         let url = await resolveRedirect(match[0]);
         let info;
-        let directUrl = url; // Default to web url
+        let directUrl = url;
 
-        // Step B: Try standard yt-dlp metadata fetch
+        // TRY 1: Normal Download
         try {
             const { stdout } = await runYtDlp(url);
             info = JSON.parse(stdout);
         } catch (err) {
-            // Step C: CATCH BLOCK - If Reddit blocks us (403), use API Fallback
-            if (err.stderr && err.stderr.includes('403')) {
-                const apiData = await getRedditApiMetadata(url);
-                if (!apiData) throw new Error("Could not fetch media via API.");
-                
-                // If we found a direct video link (v.redd.it), use that!
-                // yt-dlp works fine on v.redd.it links even if reddit.com is blocked
-                info = {
-                    title: apiData.title,
-                    formats: [], // We will just force download
-                    extractor_key: 'RedditAPI'
-                };
-                directUrl = apiData.url; // Use the DASH/HLS url
+            // TRY 2: If Blocked, Use API Fallback
+            if (err.stderr && (err.stderr.includes('403') || err.stderr.includes('HTTP Error'))) {
+                const apiData = await getRedditDirectMap(url);
+                if (apiData && apiData.is_video) {
+                    info = { title: apiData.title, formats: [], extractor_key: 'RedditAPI' };
+                    directUrl = apiData.url; // This is the unblocked v.redd.it link
+                } else {
+                    throw err; // Real error
+                }
             } else {
-                throw err; // Real error
+                throw err;
             }
         }
 
-        // Build Buttons
-        // If we used fallback, we might not have quality list, so specific buttons
+        // Generate Buttons
         const buttons = [];
         if (info.formats && info.formats.length > 0) {
-            // Logic for standard success
             const formats = info.formats.filter(f => f.ext === 'mp4' && f.height).sort((a,b) => b.height - a.height);
             const seen = new Set();
             formats.slice(0, 5).forEach(f => {
@@ -133,13 +123,12 @@ bot.on('text', async (ctx) => {
                 }
             });
         } else {
-            // Fallback buttons (We download 'best' available from the direct link)
-            buttons.push([Markup.button.callback("📹 Download Best Quality", `v|best|best`)]);
+            // Fallback Button (Downloads 'best' from direct link)
+            buttons.push([Markup.button.callback("📹 Download Video", `v|best|best`)]);
         }
         buttons.push([Markup.button.callback("🎵 Audio Only", "a|best|audio")]);
 
-        // Hide the DIRECT URL in the message
-        // If it's the fallback URL (v.redd.it), this fixes the download step too!
+        // Hide DIRECT URL in message for later retrieval
         await ctx.telegram.editMessageText(
             ctx.chat.id, msg.message_id, null,
             `✅ *${info.title.substring(0, 50)}...*\nSource: [Link](${directUrl})`,
@@ -147,17 +136,16 @@ bot.on('text', async (ctx) => {
         );
 
     } catch (err) {
-        console.error("Processing Error:", err);
-        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, "❌ Failed. Reddit is refusing connection.");
+        console.error("Handler Error:", err);
+        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, "❌ Failed. The media might be deleted or private.");
     }
 });
 
 bot.on('callback_query', async (ctx) => {
     const [type, id, label] = ctx.callbackQuery.data.split('|');
-    
-    // Retrieve the URL (might be the v.redd.it link from fallback)
     const url = ctx.callbackQuery.message.entities?.find(e => e.type === 'text_link')?.url;
-    if (!url) return ctx.answerCbQuery("❌ Error: Link lost.");
+    
+    if (!url) return ctx.answerCbQuery("❌ Link expired.");
 
     await ctx.answerCbQuery("🚀 Downloading...");
     await ctx.editMessageText(`⏳ *Downloading...*`, { parse_mode: 'Markdown' });
@@ -167,30 +155,25 @@ bot.on('callback_query', async (ctx) => {
     const finalFile = `${basePath}.${type === 'a' ? 'mp3' : 'mp4'}`;
 
     try {
-        // If we are using a direct v.redd.it link (fallback), 'best' works.
-        // If normal link, 'id' works.
         let cmd;
         if (type === 'a') {
             cmd = `yt-dlp --force-ipv4 --no-warnings -x --audio-format mp3 -o "${basePath}.%(ext)s" "${url}"`;
         } else {
-            // Use 'best' if id is generic, otherwise specific format
-            const formatSelector = id === 'best' ? 'bestvideo+bestaudio/best' : `${id}+bestaudio/best`;
-            cmd = `yt-dlp --force-ipv4 --no-warnings -f "${formatSelector}" --merge-output-format mp4 -o "${basePath}.%(ext)s" "${url}"`;
+            // If using direct link, format selector might need to be simple
+            const fmt = id === 'best' ? 'best' : `${id}+bestaudio/best`;
+            cmd = `yt-dlp --force-ipv4 --no-warnings -f "${fmt}" --merge-output-format mp4 -o "${basePath}.%(ext)s" "${url}"`;
         }
 
         await execPromise(cmd);
 
-        // Upload
         const stats = fs.statSync(finalFile);
         if (stats.size > 49.5 * 1024 * 1024) {
-            await ctx.editMessageText("⚠️ File > 50MB. Telegram limit exceeded.");
+            await ctx.editMessageText("⚠️ File > 50MB. Telegram limit.");
         } else {
             await ctx.editMessageText("📤 *Uploading...*", { parse_mode: 'Markdown' });
-            if (type === 'a') {
-                await ctx.replyWithAudio({ source: finalFile }, { caption: '🎵 Audio' });
-            } else {
-                await ctx.replyWithVideo({ source: finalFile }, { caption: `🎥 Video` });
-            }
+            type === 'a' 
+                ? await ctx.replyWithAudio({ source: finalFile })
+                : await ctx.replyWithVideo({ source: finalFile });
             await ctx.deleteMessage();
         }
     } catch (e) {
@@ -201,14 +184,18 @@ bot.on('callback_query', async (ctx) => {
     }
 });
 
-// --- SERVER SETUP (Fixes Browser 403) ---
+// --- SERVER SETUP (Fixes Website Error) ---
 app.get('/', (req, res) => res.send('✅ Bot is Alive!'));
 
 if (process.env.NODE_ENV === 'production') {
     app.use(bot.webhookCallback('/bot'));
     bot.telegram.setWebhook(`${URL}/bot`);
-    // Listen on 0.0.0.0 to ensure external access
+    // CRITICAL: Listen on 0.0.0.0
     app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Server on port ${PORT}`));
 } else {
     bot.launch();
 }
+
+// Graceful Stop
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
