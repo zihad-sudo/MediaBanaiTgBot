@@ -20,16 +20,28 @@ const app = express();
 const downloadDir = path.join(__dirname, 'downloads');
 if (!fs.existsSync(downloadDir)) fs.mkdirSync(downloadDir);
 
-// --- 1. SETUP COOKIES ---
+// --- 1. SMART COOKIE REPAIR SYSTEM ---
 const cookiePath = path.join(__dirname, 'cookies.txt');
+
 if (process.env.REDDIT_COOKIES) {
-    // We treat the input as raw Netscape text. 
-    // Render environment variables preserve newlines, which is perfect.
-    fs.writeFileSync(cookiePath, process.env.REDDIT_COOKIES);
-    console.log("✅ Cookies loaded!");
+    let rawData = process.env.REDDIT_COOKIES;
+    
+    // Fix: Render sometimes escapes newlines (e.g., "\n" becomes literal characters)
+    // We force them back to real newlines.
+    rawData = rawData.replace(/\\n/g, '\n');
+    
+    // Fix: Ensure headers are correct
+    if (!rawData.startsWith('# Netscape')) {
+        rawData = "# Netscape HTTP Cookie File\n" + rawData;
+    }
+
+    fs.writeFileSync(cookiePath, rawData);
+    console.log("✅ Cookies loaded & repaired!");
+} else {
+    console.log("⚠️ No cookies found. Bot might be blocked.");
 }
 
-// --- 2. SETUP MIRRORS (Backup Plan) ---
+// --- 2. MIRRORS (Backup Plan) ---
 const MIRRORS = [
     'https://redlib.catsarch.com',
     'https://redlib.vlingit.com',
@@ -41,20 +53,26 @@ const URL_REGEX = /(https?:\/\/(?:www\.|old\.|mobile\.)?(?:reddit\.com|x\.com|tw
 // --- UTILITIES ---
 
 const runYtDlp = async (url) => {
-    let cmd = `yt-dlp --force-ipv4 --no-warnings --no-playlist -J "${url}"`;
-    // If we have cookies, use them
-    if (fs.existsSync(cookiePath)) cmd += ` --cookies "${cookiePath}"`;
+    // We MUST use the same User-Agent as your browser for cookies to work
+    const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+    
+    let cmd = `yt-dlp --force-ipv4 --no-warnings --no-playlist --user-agent "${ua}" -J "${url}"`;
+    
+    if (fs.existsSync(cookiePath)) {
+        cmd += ` --cookies "${cookiePath}"`;
+    }
+    
     return await execPromise(cmd);
 };
 
+// Mirror Fallback logic
 const getMirrorLink = async (originalUrl) => {
     try {
         const parsed = new URL(originalUrl);
         const path = parsed.pathname;
         for (const domain of MIRRORS) {
             try {
-                // Try to get JSON from mirror
-                const { data } = await axios.get(`${domain}${path}.json`, { timeout: 5000 });
+                const { data } = await axios.get(`${domain}${path}.json`, { timeout: 4000 });
                 const post = data[0].data.children[0].data;
                 if (post.is_video && post.media?.reddit_video) {
                     return { 
@@ -70,7 +88,9 @@ const getMirrorLink = async (originalUrl) => {
 };
 
 const downloadMedia = async (url, isAudio, formatId, outputPath) => {
-    let cmd = `yt-dlp --force-ipv4 --no-warnings`;
+    const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+    let cmd = `yt-dlp --force-ipv4 --no-warnings --user-agent "${ua}"`;
+    
     if (fs.existsSync(cookiePath)) cmd += ` --cookies "${cookiePath}"`;
 
     if (isAudio) {
@@ -84,7 +104,7 @@ const downloadMedia = async (url, isAudio, formatId, outputPath) => {
 
 // --- HANDLERS ---
 
-bot.start((ctx) => ctx.reply("👋 Ready! I have your cookies loaded."));
+bot.start((ctx) => ctx.reply("👋 Ready! Cookies Active."));
 
 bot.on('text', async (ctx) => {
     const match = ctx.message.text.match(URL_REGEX);
@@ -97,21 +117,21 @@ bot.on('text', async (ctx) => {
         let info = {};
         let downloadUrl = url;
 
-        // STRATEGY 1: Try Main Site with Cookies
+        // Try Main Site (With Cookies)
         try {
             const { stdout } = await runYtDlp(url);
             info = JSON.parse(stdout);
-            console.log("✅ Fetched via Cookies");
+            console.log("✅ Fetched via Main Site");
         } catch (err) {
-            // STRATEGY 2: If Cookies fail (403), use Mirror
+            console.log("⚠️ Cookie fetch failed (" + err.message.substring(0, 30) + "...). Trying Mirror.");
+            // Try Mirror
             if (url.includes('reddit.com')) {
-                console.log("⚠️ Cookies failed/blocked. Switching to Mirror...");
                 const mirrorData = await getMirrorLink(url);
                 if (mirrorData) {
                     info = { title: mirrorData.title, formats: [], extractor_key: 'Mirror' };
-                    downloadUrl = mirrorData.url; // Use direct v.redd.it link
+                    downloadUrl = mirrorData.url;
                 } else {
-                    throw err; // Mirror failed too
+                    throw err;
                 }
             } else {
                 throw err;
@@ -141,7 +161,11 @@ bot.on('text', async (ctx) => {
 
     } catch (err) {
         console.error("Handler Error:", err.message);
-        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, "❌ Failed. Login expired or link is private.");
+        let errMsg = "❌ Failed.";
+        if (err.message.includes('Sign in')) errMsg = "❌ Cookies Expired. Update them on Render.";
+        else if (err.message.includes('403')) errMsg = "❌ Access Denied. Cookies invalid.";
+        
+        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, errMsg);
     }
 });
 
