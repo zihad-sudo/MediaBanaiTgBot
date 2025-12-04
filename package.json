@@ -1,7 +1,7 @@
 {
   "name": "telegram-media-bot",
-  "version": "1.0.0",
-  "description": "Reddit and Twitter downloader bot",
+  "version": "2.0.0",
+  "description": "Advanced Reddit Downloader",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -9,7 +9,8 @@
   "dependencies": {
     "telegraf": "^4.16.3",
     "dotenv": "^16.4.5",
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "axios": "^1.6.8"
   },
   "engines": {
     "node": ">=18.0.0"
