@@ -58,14 +58,11 @@ const getMediaFromMirror = async (originalUrl) => {
         // Try mirrors one by one
         for (const domain of MIRRORS) {
             try {
-                const mirrorApi = `${domain}${path}`;
+                // We request the JSON data from the mirror
+                const mirrorApi = `${domain}${path}.json`;
                 console.log(`🛡️ Checking Mirror: ${mirrorApi}`);
 
-                // We scrape the HTML of the mirror to find the video
-                // (Mirrors are easier to scrape than API sometimes)
-                // actually, let's use the mirror's API mode if available, 
-                // but usually appending .json to a mirror url works.
-                const { data } = await axios.get(`${domain}${path}.json`, {
+                const { data } = await axios.get(mirrorApi, {
                     timeout: 6000,
                     headers: { 'User-Agent': 'GoogleBot' }
                 });
@@ -76,6 +73,7 @@ const getMediaFromMirror = async (originalUrl) => {
                 if (post.is_video && post.media && post.media.reddit_video) {
                     return {
                         title: post.title,
+                        // Clean the URL to ensure it's the direct file
                         url: post.media.reddit_video.fallback_url.split('?')[0],
                         is_video: true
                     };
