@@ -20,7 +20,7 @@ const app = express();
 const downloadDir = path.join(__dirname, 'downloads');
 if (!fs.existsSync(downloadDir)) fs.mkdirSync(downloadDir);
 
-// --- 1. COOKIE LOADER ---
+// --- 1. COOKIE LOADER (Untouched) ---
 const cookiePath = path.join(__dirname, 'cookies.txt');
 if (process.env.REDDIT_COOKIES) {
     let rawData = process.env.REDDIT_COOKIES;
@@ -52,16 +52,18 @@ const runYtDlp = async (url) => {
     return await execPromise(cmd);
 };
 
-// --- UNIVERSAL MEDIA PARSER ---
+// --- MEDIA PARSER ---
 const fetchMediaDetails = async (postUrl) => {
     const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-    // --- A. TWITTER / X LOGIC ---
+    // ============================================================
+    // 1. TWITTER / X LOGIC (IMPROVED FAIL-SAFE)
+    // ============================================================
     if (postUrl.includes('x.com') || postUrl.includes('twitter.com')) {
         try {
-            // 1. Use API to identify type (Image vs Video vs Gallery)
+            // Use FxTwitter API to identify media type
             const apiUrl = postUrl.replace(/(twitter\.com|x\.com)/, 'api.fxtwitter.com');
-            console.log(`🐦 Twitter API Check: ${apiUrl}`);
+            console.log(`🐦 Twitter API: ${apiUrl}`);
             
             const { data } = await axios.get(apiUrl, { timeout: 5000 });
             const tweet = data.tweet;
@@ -70,45 +72,58 @@ const fetchMediaDetails = async (postUrl) => {
 
             const media = tweet.media;
 
-            // CASE: Gallery
+            // Gallery
             if (media.all && media.all.length > 1) {
                 const items = media.all.map(m => ({
                     type: m.type === 'video' ? 'video' : 'image',
                     url: m.url
                 }));
-                return { type: 'gallery', title: tweet.text || 'Gallery', items: items, source: postUrl };
+                return { type: 'gallery', title: tweet.text || 'Twitter Gallery', items: items, source: postUrl };
             }
 
-            // CASE: Single Image
+            // Single Image
             if (media.photos && media.photos.length > 0) {
-                return { type: 'image', title: tweet.text || 'Image', url: media.photos[0].url, source: postUrl };
+                return { type: 'image', title: tweet.text || 'Twitter Image', url: media.photos[0].url, source: postUrl };
             }
 
-            // CASE: Single Video (CRITICAL: Fetch Formats for Quality Choice)
+            // Single Video - THE FIX
             if (media.videos && media.videos.length > 0) {
-                console.log("🎥 Twitter Video detected. Fetching qualities via yt-dlp...");
-                // We intentionally run yt-dlp here to populate the 'formats' list
-                // This enables the 360p/720p buttons
-                const { stdout } = await runYtDlp(postUrl);
-                const info = JSON.parse(stdout);
+                const directVideoUrl = media.videos[0].url;
                 
-                return {
-                    type: 'video',
-                    title: tweet.text || 'Video',
-                    formats: info.formats, // Pass formats to handler
-                    url: media.videos[0].url, // Default fallback
-                    source: postUrl
-                };
+                // Try to get Qualities using yt-dlp
+                try {
+                    console.log("🎥 Trying to fetch Twitter qualities...");
+                    const { stdout } = await runYtDlp(postUrl);
+                    const info = JSON.parse(stdout);
+                    return {
+                        type: 'video',
+                        title: tweet.text || 'Twitter Video',
+                        formats: info.formats, // Success! We have qualities
+                        url: directVideoUrl,
+                        source: postUrl
+                    };
+                } catch (ytError) {
+                    console.log("⚠️ Twitter yt-dlp failed. Falling back to Direct Link.");
+                    // FAIL-SAFE: Return the video anyway using the API link
+                    return {
+                        type: 'video',
+                        title: tweet.text || 'Twitter Video',
+                        formats: null, // No qualities, just "Download Video"
+                        url: directVideoUrl,
+                        source: postUrl
+                    };
+                }
             }
 
         } catch (e) {
             console.error("Twitter API Error:", e.message);
-            // Fallback: If API fails, return null and let the main handler try raw yt-dlp
             return null;
         }
     }
 
-    // --- B. REDDIT LOGIC ---
+    // ============================================================
+    // 2. REDDIT LOGIC (UNTOUCHED - PERFECT STATE)
+    // ============================================================
     const cleanUrl = postUrl.split('?')[0];
     const jsonUrl = cleanUrl.replace(/\/$/, '') + '.json';
 
@@ -121,7 +136,7 @@ const fetchMediaDetails = async (postUrl) => {
 
         const post = data[0].data.children[0].data;
 
-        // 1. Gallery
+        // Gallery
         if (post.is_gallery && post.media_metadata) {
             const items = [];
             const ids = post.gallery_data?.items || [];
@@ -136,7 +151,7 @@ const fetchMediaDetails = async (postUrl) => {
             return { type: 'gallery', title: post.title, items: items, source: postUrl };
         }
 
-        // 2. Video
+        // Video
         if (post.secure_media && post.secure_media.reddit_video) {
             return {
                 type: 'video',
@@ -146,7 +161,7 @@ const fetchMediaDetails = async (postUrl) => {
             };
         }
 
-        // 3. Image
+        // Image
         if (post.url && (post.url.match(/\.(jpeg|jpg|png|gif)$/i) || post.post_hint === 'image')) {
             return { type: 'image', title: post.title, url: post.url, source: postUrl };
         }
@@ -165,7 +180,7 @@ const downloadVideo = async (url, isAudio, outputPath) => {
     if (isAudio) {
         cmd += ` -x --audio-format mp3 -o "${outputPath}.%(ext)s" "${url}"`;
     } else {
-        const fmt = "best"; // Default for direct links
+        const fmt = "best"; 
         cmd += ` -f "${fmt}" --merge-output-format mp4 -o "${outputPath}.%(ext)s" "${url}"`;
     }
     return await execPromise(cmd);
@@ -179,94 +194,105 @@ bot.on('text', async (ctx) => {
     const match = ctx.message.text.match(URL_REGEX);
     if (!match) return;
 
-    const msg = await ctx.reply("🔍 *Analyzing Media...*", { parse_mode: 'Markdown', reply_to_message_id: ctx.message.message_id });
+    const msg = await ctx.reply("🔍 *Analyzing...*", { parse_mode: 'Markdown', reply_to_message_id: ctx.message.message_id });
 
     try {
         const originalUrl = match[0];
         const fullUrl = await resolveRedirect(originalUrl);
         
-        // 1. Determine Type
         let mediaData = await fetchMediaDetails(fullUrl);
         let info = { title: 'Media' };
-        
-        // If fetchMediaDetails returned formats (Twitter Video), attach them to info
-        if (mediaData && mediaData.formats) {
-            info.formats = mediaData.formats;
-        }
 
-        // Fallback: If custom parser failed, try raw yt-dlp (e.g. for unknown sites)
+        // Fallback for Reddit raw yt-dlp if fetchMediaDetails returned null (Unlikely for Reddit, but safe)
         if (!mediaData) {
-            const { stdout } = await runYtDlp(fullUrl);
-            info = JSON.parse(stdout);
-            mediaData = { type: 'video', url: fullUrl }; 
+            try {
+                const { stdout } = await runYtDlp(fullUrl);
+                info = JSON.parse(stdout);
+                mediaData = { type: 'video', url: fullUrl }; 
+            } catch (e) {
+                throw new Error("Could not fetch media.");
+            }
         } else {
             info.title = mediaData.title || 'Media';
+            // If Twitter parser gave us formats, pass them to info
+            if (mediaData.formats) info.formats = mediaData.formats;
         }
 
         const buttons = [];
         let displayText = `✅ *${(info.title).substring(0, 50)}...*`;
 
-        // 2. Build Buttons
+        // Build Buttons
         if (mediaData.type === 'gallery') {
-            displayText += `\n\n📚 **Album Found:** ${mediaData.items.length} items`;
-            buttons.push([Markup.button.callback(`📥 Download Album (${mediaData.items.length})`, `alb|all|all`)]);
+            displayText += `\n\n📚 **Album:** ${mediaData.items.length} items`;
+            buttons.push([Markup.button.callback(`📥 Download Album`, `alb|all|all`)]);
         } 
         else if (mediaData.type === 'image') {
-            displayText += `\n\n🖼 **Single Image Detected**`;
+            displayText += `\n\n🖼 **Image Detected**`;
             buttons.push([Markup.button.callback(`🖼 Download Image`, `img|single|single`)]);
         } 
         else {
-            // VIDEO Logic (Reddit + Twitter)
+            // VIDEO
+            let hasQualities = false;
+
+            // Only show qualities if we actually found them (Twitter might return null formats in fail-safe)
             if (info.formats && info.formats.length > 0) {
-                // Filter for MP4 videos with height
                 const formats = info.formats.filter(f => f.ext === 'mp4' && f.height).sort((a,b) => b.height - a.height);
                 const seen = new Set();
-                
                 formats.slice(0, 5).forEach(f => {
                     if(!seen.has(f.height)) {
                         seen.add(f.height);
-                        // Store Format ID
                         buttons.push([Markup.button.callback(`📹 ${f.height}p`, `vid|${f.format_id}|${f.height}`)]);
                     }
                 });
-            } 
-            
-            // If no formats found (e.g. Direct Reddit Link), fallback to "Best"
-            if (buttons.length === 0) {
+                hasQualities = true;
+            }
+
+            // Fallback Button (If no qualities found, OR direct Reddit mode, OR Twitter fail-safe)
+            if (!hasQualities || buttons.length === 0) {
                 buttons.push([Markup.button.callback("📹 Download Video", `vid|direct|best`)]);
             }
             buttons.push([Markup.button.callback("🎵 Audio Only", "aud|direct|audio")]);
         }
 
+        // Store the SAFE URL (Direct link if available) to bypass blocks
+        const storedUrl = (mediaData?.type === 'video' && mediaData.url) ? mediaData.url : fullUrl;
+
         await ctx.telegram.editMessageText(
             ctx.chat.id, msg.message_id, null,
-            `${displayText}\nSource: [Link](${fullUrl})`,
+            `${displayText}\nSource: [Link](${storedUrl})`,
             { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) }
         );
 
     } catch (err) {
         console.error("Handler Error:", err.message);
-        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, "❌ Failed. Content private or unavailable.");
+        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, "❌ Failed. Link invalid or private.");
     }
 });
 
 bot.on('callback_query', async (ctx) => {
     const [action, id, label] = ctx.callbackQuery.data.split('|');
     const url = ctx.callbackQuery.message.entities?.find(e => e.type === 'text_link')?.url;
+    
     if (!url) return ctx.answerCbQuery("❌ Link expired.");
 
     if (action === 'img') {
-        await ctx.answerCbQuery("🚀 Sending Image...");
-        const media = await fetchMediaDetails(url);
-        const imgUrl = media?.url || url;
-        try { await ctx.replyWithPhoto(imgUrl); } 
-        catch(e) { await ctx.replyWithDocument(imgUrl); }
+        await ctx.answerCbQuery("🚀 Sending...");
+        try { await ctx.replyWithPhoto(url); } catch(e) { await ctx.replyWithDocument(url); }
         await ctx.deleteMessage();
     } 
     else if (action === 'alb') {
-        await ctx.answerCbQuery("🚀 Processing Album...");
+        await ctx.answerCbQuery("🚀 Processing...");
+        // Re-fetch gallery items using original logic (simplified here assuming url is mostly sufficient or we just need simple logic)
+        // Ideally we need to parse the gallery again if we didn't store items.
+        // Recover original url if possible or pass data differently. 
+        // For stability, we simply tell user to check original link if complex, 
+        // OR we use the URL to fetch again.
         await ctx.editMessageText(`⏳ *Fetching Album...*`, { parse_mode: 'Markdown' });
-        const media = await fetchMediaDetails(url);
+        
+        // RE-FETCH for Gallery Items (since we can't store array in button)
+        // We use the stored source URL if it's the post, or just try the url
+        const media = await fetchMediaDetails(url); 
+        
         if (media && media.type === 'gallery') {
              await ctx.editMessageText(`📤 *Sending ${media.items.length} items...*`, { parse_mode: 'Markdown' });
              for (const item of media.items) {
@@ -281,7 +307,6 @@ bot.on('callback_query', async (ctx) => {
         }
     } 
     else {
-        // VIDEO DOWNLOAD
         await ctx.answerCbQuery("🚀 Downloading...");
         await ctx.editMessageText(`⏳ *Downloading...*`, { parse_mode: 'Markdown' });
 
@@ -293,7 +318,6 @@ bot.on('callback_query', async (ctx) => {
             if (id === 'direct') {
                 await downloadVideo(url, action === 'aud', basePath);
             } else {
-                // Download specific format (works for Reddit & Twitter)
                 let cmd = `yt-dlp --force-ipv4 --no-warnings`;
                 if (fs.existsSync(cookiePath)) cmd += ` --cookies "${cookiePath}"`;
                 const fmt = `${id}+bestaudio/best`;
@@ -321,7 +345,7 @@ bot.on('callback_query', async (ctx) => {
 });
 
 // --- SERVER ---
-app.get('/', (req, res) => res.send('✅ Bot Online v9'));
+app.get('/', (req, res) => res.send('✅ Bot Online v11'));
 if (process.env.NODE_ENV === 'production') {
     app.use(bot.webhookCallback('/bot'));
     bot.telegram.setWebhook(`${APP_URL}/bot`);
