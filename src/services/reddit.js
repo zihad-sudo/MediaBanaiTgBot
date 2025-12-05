@@ -7,8 +7,7 @@ class RedditService {
         try { pathName = new URL(url).pathname; } catch(e) { return null; }
 
         // ============================================================
-        // STRATEGY 1: DIRECT REDDIT API (The v10 Method)
-        // This usually works 99% of the time with the Android User-Agent
+        // STRATEGY 1: DIRECT REDDIT API (Android Identity)
         // ============================================================
         try {
             const cleanUrl = url.split('?')[0];
@@ -26,19 +25,15 @@ class RedditService {
                 return this.parseRedditData(data[0].data.children[0].data, url);
             }
         } catch (e) {
-            console.log(`⚠️ Direct Reddit API failed (${e.message}). Switching to Mirrors...`);
+            console.log(`⚠️ Direct API failed. Switching to Mirrors...`);
         }
 
         // ============================================================
-        // STRATEGY 2: MIRROR ROTATION (Backup)
-        // If Reddit blocks the direct request, we ask the mirrors.
+        // STRATEGY 2: MIRROR ROTATION
         // ============================================================
         for (const domain of config.REDDIT_MIRRORS) {
             try {
-                // Construct Mirror API URL
-                let mirrorUrl = `${domain}${pathName}`;
-                // Clean up double slashes and ensure .json
-                mirrorUrl = mirrorUrl.replace(/\/+/g, '/').replace('https:/', 'https://'); 
+                let mirrorUrl = `${domain}${pathName}`.replace(/\/+/g, '/').replace('https:/', 'https://'); 
                 if (!mirrorUrl.endsWith('.json')) mirrorUrl += ".json";
 
                 console.log(`🌐 Trying Mirror: ${domain}`);
@@ -49,58 +44,71 @@ class RedditService {
                 });
 
                 if (data && data[0] && data[0].data) {
-                    console.log(`✅ Mirror Success on ${domain}`);
                     return this.parseRedditData(data[0].data.children[0].data, url);
                 }
 
-            } catch (e) { 
-                console.log(`❌ Mirror ${domain} failed.`);
-                continue; 
-            } 
+            } catch (e) { continue; } 
         }
         
-        console.error("❌ All strategies failed.");
-        return null;
+        // ============================================================
+        // STRATEGY 3: ULTIMATE FALLBACK (The v10 "Shameless" Mode)
+        // If all APIs fail, we assume it's a video and let yt-dlp try directly.
+        // This prevents "Media not found" errors.
+        // ============================================================
+        console.log("⚠️ All APIs failed. Returning raw URL for yt-dlp fallback.");
+        return {
+            title: 'Reddit Media (Fallback)',
+            source: url,
+            type: 'video',
+            url: url // Send original URL to yt-dlp
+        };
     }
 
-    // Helper to process the JSON data (Shared by both strategies)
+    // --- PARSER LOGIC ---
     parseRedditData(post, sourceUrl) {
         const baseInfo = { title: post.title || 'Reddit Media', source: sourceUrl };
 
-        // A. Gallery
+        // 1. Gallery
         if (post.is_gallery && post.media_metadata) {
             const items = [];
             const ids = post.gallery_data?.items || [];
             ids.forEach(item => {
                 const meta = post.media_metadata[item.media_id];
                 if (meta && meta.status === 'valid') {
-                    // Try to get highest quality image
                     let u = meta.s.u ? meta.s.u.replace(/&amp;/g, '&') : meta.s.gif;
-                    // Sometimes galleries contain videos (MP4)
                     if (meta.e === 'Video' && meta.s.mp4) {
                         u = meta.s.mp4.replace(/&amp;/g, '&');
-                        items.push({ type: 'video', url: u });
-                    } else {
-                        items.push({ type: 'image', url: u });
                     }
+                    items.push({ type: 'image', url: u });
                 }
             });
             return { ...baseInfo, type: 'gallery', items };
         }
 
-        // B. Video (Extract Direct Link)
+        // 2. Video (Hosted on Reddit - v.redd.it)
         if (post.secure_media && post.secure_media.reddit_video) {
             return {
                 ...baseInfo,
                 type: 'video',
-                // Direct HLS/MP4 link bypasses the 403 block on the main site
+                // Direct Link Bypasses 403
                 url: post.secure_media.reddit_video.fallback_url.split('?')[0]
             };
         }
 
-        // C. Image / GIF
+        // 3. Image / GIF
         if (post.url && (post.url.match(/\.(jpeg|jpg|png|gif)$/i) || post.post_hint === 'image')) {
             return { ...baseInfo, type: 'image', url: post.url };
+        }
+
+        // 4. EXTERNAL MEDIA (RedGifs, Imgur, etc.) - The Missing Piece!
+        // If we have a URL but it didn't match the above, we treat it as a video target.
+        if (post.url) {
+            console.log(`🔗 Found External Link: ${post.url}`);
+            return {
+                ...baseInfo,
+                type: 'video', // Treat as video so yt-dlp handles it
+                url: post.url
+            };
         }
 
         return null;
