@@ -14,148 +14,155 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const APP_URL = process.env.RENDER_EXTERNAL_URL;
 const PORT = process.env.PORT || 3000;
 
-// MATCHING USER-AGENT (Crucial: Must match your Android Browser)
-const USER_AGENT = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36';
-
 const bot = new Telegraf(BOT_TOKEN);
 const app = express();
 
 const downloadDir = path.join(__dirname, 'downloads');
 if (!fs.existsSync(downloadDir)) fs.mkdirSync(downloadDir);
 
-// --- 1. COOKIE LOADER & REPAIR ---
+// --- 1. COOKIE LOADER ---
 const cookiePath = path.join(__dirname, 'cookies.txt');
 if (process.env.REDDIT_COOKIES) {
     let rawData = process.env.REDDIT_COOKIES;
-    
-    // Fix 1: Restore newlines lost by Render
-    rawData = rawData.replace(/\\n/g, '\n').replace(/ /g, '\t'); 
-    
-    // Fix 2: Clean up the #HttpOnly_ prefix which sometimes confuses yt-dlp
-    // We replace "#HttpOnly_" with nothing, effectively uncommenting it for usage
-    rawData = rawData.replace(/#HttpOnly_/g, '');
-
-    // Fix 3: Ensure Header exists
-    if (!rawData.startsWith('# Netscape')) {
-        rawData = "# Netscape HTTP Cookie File\n" + rawData;
-    }
-
+    // Repair Render's mangled newlines
+    rawData = rawData.replace(/\\n/g, '\n').replace(/ /g, '\t');
+    rawData = rawData.replace(/#HttpOnly_/g, ''); 
+    if (!rawData.startsWith('# Netscape')) rawData = "# Netscape HTTP Cookie File\n" + rawData;
     fs.writeFileSync(cookiePath, rawData);
-    console.log("✅ Cookies loaded & User-Agent sync prepared.");
+    console.log("✅ Cookies loaded.");
 }
-
-// --- 2. MIRRORS (Backup) ---
-const MIRRORS = [
-    'https://redlib.catsarch.com',
-    'https://redlib.vlingit.com',
-    'https://libreddit.kavin.rocks'
-];
 
 const URL_REGEX = /(https?:\/\/(?:www\.|old\.|mobile\.)?(?:reddit\.com|x\.com|twitter\.com)\/[^\s]+)/i;
 
 // --- UTILITIES ---
 
+// 1. Resolve Redirects (/s/ links)
 const resolveRedirect = async (shortUrl) => {
     if (!shortUrl.includes('/s/')) return shortUrl;
     try {
         const res = await axios.head(shortUrl, {
             maxRedirects: 0,
             validateStatus: (s) => s >= 300 && s < 400,
-            headers: { 'User-Agent': USER_AGENT }
+            headers: { 'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K)' }
         });
         return res.headers.location || shortUrl;
     } catch (e) { return shortUrl; }
 };
 
+// 2. THE BYPASS: Fetch JSON Metadata Manually
+// We use this to find the direct HLS/DASH link so yt-dlp doesn't have to visit the blocked webpage.
+const fetchDirectMediaUrl = async (postUrl) => {
+    const cleanUrl = postUrl.split('?')[0];
+    // We try multiple endpoints to get the JSON
+    const endpoints = [
+        `${cleanUrl}.json`, // Standard
+        cleanUrl.replace('www.reddit.com', 'old.reddit.com') + '.json', // Old Reddit
+        cleanUrl.replace('reddit.com', 'api.reddit.com') + '.json' // API subdomain
+    ];
+
+    for (const url of endpoints) {
+        try {
+            console.log(`🕵️ Fetching Metadata: ${url}`);
+            const { data } = await axios.get(url, {
+                timeout: 5000,
+                headers: { 
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'application/json'
+                }
+            });
+
+            const post = data[0].data.children[0].data;
+
+            // STRATEGY: Find the HLS (m3u8) Link. This contains video AND audio.
+            if (post.secure_media && post.secure_media.reddit_video) {
+                return {
+                    title: post.title,
+                    // hls_url is best, fallback to dash_url, fallback to fallback_url
+                    url: post.secure_media.reddit_video.hls_url || post.secure_media.reddit_video.dash_url || post.secure_media.reddit_video.fallback_url,
+                    is_video: true
+                };
+            }
+            // Image/Gif
+            if (post.url && (post.url.includes('i.redd.it') || post.url.includes('v.redd.it'))) {
+                return { title: post.title, url: post.url, is_video: true };
+            }
+        } catch (e) {
+            // If 403, try next endpoint
+            console.log(`⚠️ Endpoint failed (${e.response?.status || e.message}), trying next...`);
+        }
+    }
+    return null;
+};
+
+// 3. Downloader
 const runYtDlp = async (url) => {
-    // We force the Android User-Agent here
-    let cmd = `yt-dlp --force-ipv4 --no-warnings --no-playlist --user-agent "${USER_AGENT}" -J "${url}"`;
+    let cmd = `yt-dlp --force-ipv4 --no-warnings --no-playlist -J "${url}"`;
     if (fs.existsSync(cookiePath)) cmd += ` --cookies "${cookiePath}"`;
     return await execPromise(cmd);
 };
 
-const getMirrorLink = async (fullUrl) => {
-    try {
-        const parsed = new URL(fullUrl);
-        const cleanPath = parsed.pathname; 
-        for (const domain of MIRRORS) {
-            try {
-                // Mirrors often fail on NSFW content, but we try anyway
-                const { data } = await axios.get(`${domain}${cleanPath}.json`, { 
-                    timeout: 4000,
-                    headers: { 'User-Agent': USER_AGENT } 
-                });
-                const post = data[0].data.children[0].data;
-                if (post.is_video && post.media?.reddit_video) {
-                    return { 
-                        title: post.title, 
-                        url: post.media.reddit_video.fallback_url.split('?')[0],
-                        is_video: true 
-                    };
-                }
-            } catch (e) { continue; }
-        }
-    } catch (e) { }
-    return null;
-};
-
-const downloadMedia = async (url, isAudio, formatId, outputPath) => {
-    let cmd = `yt-dlp --force-ipv4 --no-warnings --user-agent "${USER_AGENT}"`;
+const downloadDirect = async (url, isAudio, outputPath) => {
+    // We download the HLS/Direct link directly. No webpage scraping.
+    let cmd = `yt-dlp --force-ipv4 --no-warnings`;
+    
+    // Cookies not needed for HLS links usually, but good to have
     if (fs.existsSync(cookiePath)) cmd += ` --cookies "${cookiePath}"`;
 
     if (isAudio) {
         cmd += ` -x --audio-format mp3 -o "${outputPath}.%(ext)s" "${url}"`;
     } else {
-        const fmt = formatId === 'best' ? 'best' : `${formatId}+bestaudio/best`;
-        cmd += ` -f "${fmt}" --merge-output-format mp4 -o "${outputPath}.%(ext)s" "${url}"`;
+        // Just download best available from the direct link
+        cmd += ` -f "best" --merge-output-format mp4 -o "${outputPath}.%(ext)s" "${url}"`;
     }
     return await execPromise(cmd);
 };
 
 // --- HANDLERS ---
 
-bot.start((ctx) => ctx.reply("👋 Ready! Android Mode Active."));
+bot.start((ctx) => ctx.reply("👋 Ready! Using Direct API Extraction."));
 
 bot.on('text', async (ctx) => {
     const match = ctx.message.text.match(URL_REGEX);
     if (!match) return;
 
-    const msg = await ctx.reply("🔍 *Verifying Credentials...*", { parse_mode: 'Markdown', reply_to_message_id: ctx.message.message_id });
+    const msg = await ctx.reply("🔍 *Bypassing Webpage...*", { parse_mode: 'Markdown', reply_to_message_id: ctx.message.message_id });
 
     try {
         const originalUrl = match[0];
         let fullUrl = await resolveRedirect(originalUrl);
         
-        // Clean tracking params
-        try { const u = new URL(fullUrl); u.search = ""; fullUrl = u.toString(); } catch(e) {}
-
         let info = {};
-        let downloadUrl = fullUrl;
+        let directLink = null;
 
-        // STRATEGY: Main Site with Android Cookies
-        try {
-            const { stdout } = await runYtDlp(fullUrl);
-            info = JSON.parse(stdout);
-            console.log("✅ Fetched via Cookies");
-        } catch (err) {
-            console.log("⚠️ Cookies rejected. Trying Mirror...");
-            if (fullUrl.includes('reddit.com')) {
-                const mirrorData = await getMirrorLink(fullUrl);
-                if (mirrorData) {
-                    info = { title: mirrorData.title, formats: [], extractor_key: 'Mirror' };
-                    downloadUrl = mirrorData.url;
-                } else {
-                    // One last try: Force v.redd.it detection if possible
-                    if(err.stderr && err.stderr.includes('NSFW')) {
-                        throw new Error("NSFW Content blocked. Verify account settings.");
-                    }
-                    throw err;
-                }
-            } else { throw err; }
+        // STRATEGY A: Try Standard yt-dlp first (Best for Twitter/X)
+        if (fullUrl.includes('x.com') || fullUrl.includes('twitter.com')) {
+             const { stdout } = await runYtDlp(fullUrl);
+             info = JSON.parse(stdout);
+             directLink = fullUrl;
+        } 
+        // STRATEGY B: Manual JSON Extraction (For Reddit)
+        else {
+             console.log("🚀 Activating Reddit Bypass...");
+             const mediaData = await fetchDirectMediaUrl(fullUrl);
+             
+             if (mediaData) {
+                 console.log("✅ Found Direct Link:", mediaData.url);
+                 info = { 
+                     title: mediaData.title, 
+                     formats: [] // Dummy formats, we don't need them for direct DL
+                 };
+                 directLink = mediaData.url;
+             } else {
+                 // Fallback: Let yt-dlp try its best with cookies
+                 const { stdout } = await runYtDlp(fullUrl);
+                 info = JSON.parse(stdout);
+                 directLink = fullUrl;
+             }
         }
 
         // Buttons
         const buttons = [];
+        // If we have detailed formats (Twitter), show them
         if (info.formats && info.formats.length > 0) {
             const formats = info.formats.filter(f => f.ext === 'mp4' && f.height).sort((a,b) => b.height - a.height);
             const seen = new Set();
@@ -166,20 +173,22 @@ bot.on('text', async (ctx) => {
                 }
             });
         }
-        if (buttons.length === 0) buttons.push([Markup.button.callback("📹 Download Video", `v|best|best`)]);
-        buttons.push([Markup.button.callback("🎵 Audio Only", "a|best|audio")]);
+        
+        // If no formats (Direct Reddit Link), show generic button
+        if (buttons.length === 0) {
+            buttons.push([Markup.button.callback("📹 Download Video", `v|direct|best`)]);
+        }
+        buttons.push([Markup.button.callback("🎵 Audio Only", "a|direct|audio")]);
 
         await ctx.telegram.editMessageText(
             ctx.chat.id, msg.message_id, null,
-            `✅ *${(info.title || 'Media Found').substring(0, 50)}...*\nSource: [Link](${downloadUrl})`,
+            `✅ *${(info.title || 'Media Found').substring(0, 50)}...*\nSource: [Link](${directLink})`,
             { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) }
         );
 
     } catch (err) {
         console.error("Handler Error:", err.message);
-        let text = "❌ Failed.";
-        if (err.message.includes('403')) text = "❌ Access Denied. Reddit rejected the cookies.";
-        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, text);
+        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, "❌ Failed. Reddit blocked the request.");
     }
 });
 
@@ -196,8 +205,18 @@ bot.on('callback_query', async (ctx) => {
     const finalFile = `${basePath}.${type === 'a' ? 'mp3' : 'mp4'}`;
 
     try {
-        await downloadMedia(url, type === 'a', id, basePath);
-        
+        if (id === 'direct') {
+            // Direct Link Mode (Bypasses webpage)
+            await downloadDirect(url, type === 'a', basePath);
+        } else {
+            // Standard Mode (Twitter)
+            let cmd = `yt-dlp --force-ipv4 --no-warnings`;
+            if (fs.existsSync(cookiePath)) cmd += ` --cookies "${cookiePath}"`;
+            const fmt = `${id}+bestaudio/best`;
+            cmd += ` -f "${fmt}" --merge-output-format mp4 -o "${basePath}.%(ext)s" "${url}"`;
+            await execPromise(cmd);
+        }
+
         const stats = fs.statSync(finalFile);
         if (stats.size > 49.5 * 1024 * 1024) {
             await ctx.editMessageText("⚠️ File > 50MB.");
@@ -216,7 +235,7 @@ bot.on('callback_query', async (ctx) => {
     }
 });
 
-app.get('/', (req, res) => res.send('✅ Bot Online (Android Mode)'));
+app.get('/', (req, res) => res.send('✅ Bot Online'));
 if (process.env.NODE_ENV === 'production') {
     app.use(bot.webhookCallback('/bot'));
     bot.telegram.setWebhook(`${APP_URL}/bot`);
