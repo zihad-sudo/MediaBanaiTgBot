@@ -46,57 +46,65 @@ const resolveRedirect = async (shortUrl) => {
     } catch (e) { return shortUrl; }
 };
 
-// --- UNIVERSAL MEDIA PARSER (Reddit + Twitter) ---
+const runYtDlp = async (url) => {
+    let cmd = `yt-dlp --force-ipv4 --no-warnings --no-playlist -J "${url}"`;
+    if (fs.existsSync(cookiePath)) cmd += ` --cookies "${cookiePath}"`;
+    return await execPromise(cmd);
+};
+
+// --- UNIVERSAL MEDIA PARSER ---
 const fetchMediaDetails = async (postUrl) => {
     const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
     // --- A. TWITTER / X LOGIC ---
     if (postUrl.includes('x.com') || postUrl.includes('twitter.com')) {
         try {
-            // Use FxTwitter API to get clean metadata
-            // Replace domain with api.fxtwitter.com
+            // 1. Use API to identify type (Image vs Video vs Gallery)
             const apiUrl = postUrl.replace(/(twitter\.com|x\.com)/, 'api.fxtwitter.com');
-            console.log(`🐦 Twitter API: ${apiUrl}`);
+            console.log(`🐦 Twitter API Check: ${apiUrl}`);
             
             const { data } = await axios.get(apiUrl, { timeout: 5000 });
             const tweet = data.tweet;
 
-            if (!tweet || !tweet.media) return null; // No media found
+            if (!tweet || !tweet.media) return null;
 
             const media = tweet.media;
 
-            // 1. Gallery (Multiple photos/videos)
+            // CASE: Gallery
             if (media.all && media.all.length > 1) {
                 const items = media.all.map(m => ({
                     type: m.type === 'video' ? 'video' : 'image',
                     url: m.url
                 }));
-                return { type: 'gallery', title: tweet.text || 'Twitter Gallery', items: items, source: postUrl };
+                return { type: 'gallery', title: tweet.text || 'Gallery', items: items, source: postUrl };
             }
 
-            // 2. Single Video
+            // CASE: Single Image
+            if (media.photos && media.photos.length > 0) {
+                return { type: 'image', title: tweet.text || 'Image', url: media.photos[0].url, source: postUrl };
+            }
+
+            // CASE: Single Video (CRITICAL: Fetch Formats for Quality Choice)
             if (media.videos && media.videos.length > 0) {
+                console.log("🎥 Twitter Video detected. Fetching qualities via yt-dlp...");
+                // We intentionally run yt-dlp here to populate the 'formats' list
+                // This enables the 360p/720p buttons
+                const { stdout } = await runYtDlp(postUrl);
+                const info = JSON.parse(stdout);
+                
                 return {
                     type: 'video',
-                    title: tweet.text || 'Twitter Video',
-                    url: media.videos[0].url,
-                    source: postUrl
-                };
-            }
-
-            // 3. Single Image
-            if (media.photos && media.photos.length > 0) {
-                return {
-                    type: 'image',
-                    title: tweet.text || 'Twitter Image',
-                    url: media.photos[0].url,
+                    title: tweet.text || 'Video',
+                    formats: info.formats, // Pass formats to handler
+                    url: media.videos[0].url, // Default fallback
                     source: postUrl
                 };
             }
 
         } catch (e) {
-            console.error("Twitter Parse Error:", e.message);
-            return null; // Fallback to yt-dlp
+            console.error("Twitter API Error:", e.message);
+            // Fallback: If API fails, return null and let the main handler try raw yt-dlp
+            return null;
         }
     }
 
@@ -150,12 +158,6 @@ const fetchMediaDetails = async (postUrl) => {
     }
 };
 
-const runYtDlp = async (url) => {
-    let cmd = `yt-dlp --force-ipv4 --no-warnings --no-playlist -J "${url}"`;
-    if (fs.existsSync(cookiePath)) cmd += ` --cookies "${cookiePath}"`;
-    return await execPromise(cmd);
-};
-
 const downloadVideo = async (url, isAudio, outputPath) => {
     let cmd = `yt-dlp --force-ipv4 --no-warnings`;
     if (fs.existsSync(cookiePath)) cmd += ` --cookies "${cookiePath}"`;
@@ -163,14 +165,15 @@ const downloadVideo = async (url, isAudio, outputPath) => {
     if (isAudio) {
         cmd += ` -x --audio-format mp3 -o "${outputPath}.%(ext)s" "${url}"`;
     } else {
-        cmd += ` -f "best" --merge-output-format mp4 -o "${outputPath}.%(ext)s" "${url}"`;
+        const fmt = "best"; // Default for direct links
+        cmd += ` -f "${fmt}" --merge-output-format mp4 -o "${outputPath}.%(ext)s" "${url}"`;
     }
     return await execPromise(cmd);
 };
 
 // --- HANDLERS ---
 
-bot.start((ctx) => ctx.reply("👋 Ready! Send Reddit or Twitter links (Video, Image, Album)."));
+bot.start((ctx) => ctx.reply("👋 Ready! Send links."));
 
 bot.on('text', async (ctx) => {
     const match = ctx.message.text.match(URL_REGEX);
@@ -185,8 +188,13 @@ bot.on('text', async (ctx) => {
         // 1. Determine Type
         let mediaData = await fetchMediaDetails(fullUrl);
         let info = { title: 'Media' };
+        
+        // If fetchMediaDetails returned formats (Twitter Video), attach them to info
+        if (mediaData && mediaData.formats) {
+            info.formats = mediaData.formats;
+        }
 
-        // Fallback for Twitter Videos if FxTwitter fails (use yt-dlp)
+        // Fallback: If custom parser failed, try raw yt-dlp (e.g. for unknown sites)
         if (!mediaData) {
             const { stdout } = await runYtDlp(fullUrl);
             info = JSON.parse(stdout);
@@ -208,17 +216,23 @@ bot.on('text', async (ctx) => {
             buttons.push([Markup.button.callback(`🖼 Download Image`, `img|single|single`)]);
         } 
         else {
-            // Video
+            // VIDEO Logic (Reddit + Twitter)
             if (info.formats && info.formats.length > 0) {
+                // Filter for MP4 videos with height
                 const formats = info.formats.filter(f => f.ext === 'mp4' && f.height).sort((a,b) => b.height - a.height);
                 const seen = new Set();
+                
                 formats.slice(0, 5).forEach(f => {
                     if(!seen.has(f.height)) {
                         seen.add(f.height);
+                        // Store Format ID
                         buttons.push([Markup.button.callback(`📹 ${f.height}p`, `vid|${f.format_id}|${f.height}`)]);
                     }
                 });
-            } else {
+            } 
+            
+            // If no formats found (e.g. Direct Reddit Link), fallback to "Best"
+            if (buttons.length === 0) {
                 buttons.push([Markup.button.callback("📹 Download Video", `vid|direct|best`)]);
             }
             buttons.push([Markup.button.callback("🎵 Audio Only", "aud|direct|audio")]);
@@ -232,57 +246,42 @@ bot.on('text', async (ctx) => {
 
     } catch (err) {
         console.error("Handler Error:", err.message);
-        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, "❌ Failed. Link invalid or private.");
+        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, "❌ Failed. Content private or unavailable.");
     }
 });
 
 bot.on('callback_query', async (ctx) => {
     const [action, id, label] = ctx.callbackQuery.data.split('|');
     const url = ctx.callbackQuery.message.entities?.find(e => e.type === 'text_link')?.url;
-    
     if (!url) return ctx.answerCbQuery("❌ Link expired.");
 
-    // --- IMAGE ---
     if (action === 'img') {
         await ctx.answerCbQuery("🚀 Sending Image...");
         const media = await fetchMediaDetails(url);
-        // Fallback: If fetch fails but we know it's image, try using url directly (rare case)
-        const imgUrl = media?.url || url; 
-        
-        try {
-            await ctx.replyWithPhoto(imgUrl, { caption: '🖼 Downloaded via Bot' });
-        } catch(e) {
-            await ctx.replyWithDocument(imgUrl, { caption: '🖼 High Quality Image' });
-        }
+        const imgUrl = media?.url || url;
+        try { await ctx.replyWithPhoto(imgUrl); } 
+        catch(e) { await ctx.replyWithDocument(imgUrl); }
         await ctx.deleteMessage();
     } 
-    // --- ALBUM ---
     else if (action === 'alb') {
         await ctx.answerCbQuery("🚀 Processing Album...");
         await ctx.editMessageText(`⏳ *Fetching Album...*`, { parse_mode: 'Markdown' });
-        
         const media = await fetchMediaDetails(url);
-        
         if (media && media.type === 'gallery') {
-             const items = media.items;
-             await ctx.editMessageText(`📤 *Sending ${items.length} items...*`, { parse_mode: 'Markdown' });
-             
-             // Send items (Document format for best quality)
-             for (const item of items) {
+             await ctx.editMessageText(`📤 *Sending ${media.items.length} items...*`, { parse_mode: 'Markdown' });
+             for (const item of media.items) {
                  try {
                      if (item.type === 'video') await ctx.replyWithVideo(item.url);
                      else await ctx.replyWithDocument(item.url);
-                 } catch (e) {
-                     console.error("Album item failed:", e.message);
-                 }
+                 } catch (e) {}
              }
              await ctx.deleteMessage();
         } else {
-            await ctx.editMessageText("❌ Failed to load gallery.");
+            await ctx.editMessageText("❌ Gallery Error.");
         }
-    }
-    // --- VIDEO ---
+    } 
     else {
+        // VIDEO DOWNLOAD
         await ctx.answerCbQuery("🚀 Downloading...");
         await ctx.editMessageText(`⏳ *Downloading...*`, { parse_mode: 'Markdown' });
 
@@ -292,14 +291,9 @@ bot.on('callback_query', async (ctx) => {
 
         try {
             if (id === 'direct') {
-                const media = await fetchMediaDetails(url);
-                if (media && media.type === 'video') {
-                     await downloadVideo(media.url, action === 'aud', basePath);
-                } else {
-                     // Try downloading the main URL directly as last resort
-                     await downloadVideo(url, action === 'aud', basePath);
-                }
+                await downloadVideo(url, action === 'aud', basePath);
             } else {
+                // Download specific format (works for Reddit & Twitter)
                 let cmd = `yt-dlp --force-ipv4 --no-warnings`;
                 if (fs.existsSync(cookiePath)) cmd += ` --cookies "${cookiePath}"`;
                 const fmt = `${id}+bestaudio/best`;
@@ -327,7 +321,7 @@ bot.on('callback_query', async (ctx) => {
 });
 
 // --- SERVER ---
-app.get('/', (req, res) => res.send('✅ Bot Online v8'));
+app.get('/', (req, res) => res.send('✅ Bot Online v9'));
 if (process.env.NODE_ENV === 'production') {
     app.use(bot.webhookCallback('/bot'));
     bot.telegram.setWebhook(`${APP_URL}/bot`);
