@@ -6,10 +6,8 @@ const { version } = require('../../package.json');
 const start = (bot) => {
     const app = express();
 
-    // API Logs
     app.get('/api/logs', (req, res) => res.json(logger.getLogs()));
 
-    // Dashboard
     app.get('/', (req, res) => {
         res.send(`
         <html>
@@ -42,7 +40,7 @@ const start = (bot) => {
         app.listen(config.PORT, '0.0.0.0', () => console.log(`🚀 Server on ${config.PORT}`));
     } else {
         bot.launch();
-        console.log("🚀 Bot started (Polling Mode)");
+        console.log("🚀 Bot started");
     }
 };
 
