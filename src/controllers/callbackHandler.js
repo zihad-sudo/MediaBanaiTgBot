@@ -3,8 +3,9 @@ const path = require('path');
 const config = require('../config/settings');
 const downloader = require('../utils/downloader');
 const extractor = require('../services/extractors');
+const db = require('../utils/db'); // IMPORT DB
 
-// Services for re-extraction
+// Services
 const redditService = require('../services/reddit');
 const twitterService = require('../services/twitter');
 const instagramService = require('../services/instagram');
@@ -18,45 +19,28 @@ const handleCallback = async (ctx) => {
 
     // --- IMAGE ---
     if (action === 'img') {
-        await ctx.answerCbQuery("🚀 Downloading...");
-        const imgPath = path.join(config.DOWNLOAD_DIR, `${Date.now()}.jpg`);
-        try {
-            await downloader.downloadFile(url, imgPath);
-            await ctx.replyWithPhoto({ source: imgPath });
-            await ctx.deleteMessage();
-        } catch (e) {
-            try { await ctx.replyWithDocument(url); } catch {}
-        } finally {
-            if (fs.existsSync(imgPath)) fs.unlinkSync(imgPath);
-        }
+        const sent = await ctx.replyWithPhoto(url).catch(async () => {
+             // Fallback to local download if URL send fails
+             const imgPath = path.join(config.DOWNLOAD_DIR, `${Date.now()}.jpg`);
+             await downloader.downloadFile(url, imgPath);
+             const s = await ctx.replyWithPhoto({ source: imgPath });
+             fs.unlinkSync(imgPath);
+             return s;
+        });
+
+        // CACHE PHOTO
+        if(sent) db.setCache(url, sent.photo[sent.photo.length-1].file_id, 'photo');
+        await ctx.deleteMessage();
     } 
     // --- ALBUM ---
     else if (action === 'alb') {
         await ctx.answerCbQuery("🚀 Processing...");
-        await ctx.editMessageText("⏳ *Fetching Album...*", { parse_mode: 'Markdown' });
-        
-        let media = null;
-        if (url.includes('tiktok.com')) media = await tiktokService.extract(url);
-        else if (url.includes('instagram.com')) media = await instagramService.extract(url);
-        else if (url.includes('x.com')) media = await twitterService.extract(url);
-        else media = await redditService.extract(url);
-
+        const media = await extractor.extract(url);
         if (media?.type === 'gallery') {
-            await ctx.editMessageText(`📤 *Sending ${media.items.length} items...*`, { parse_mode: 'Markdown' });
-            for (const item of media.items) {
-                try {
-                    if (item.type === 'video') await ctx.replyWithVideo(item.url);
-                    else {
-                        const tmpName = path.join(config.DOWNLOAD_DIR, `gal_${Date.now()}_${Math.random()}.jpg`);
-                        await downloader.downloadFile(item.url, tmpName);
-                        await ctx.replyWithDocument({ source: tmpName });
-                        fs.unlinkSync(tmpName);
-                    }
-                } catch (e) {}
-            }
             await ctx.deleteMessage();
-        } else {
-            await ctx.editMessageText("❌ Failed.");
+            for (const item of media.items) {
+                try { if(item.type==='video') await ctx.replyWithVideo(item.url); else await ctx.replyWithDocument(item.url); } catch {}
+            }
         }
     } 
     // --- VIDEO ---
@@ -64,7 +48,8 @@ const handleCallback = async (ctx) => {
         await ctx.answerCbQuery("🚀 Downloading...");
         await ctx.editMessageText(`⏳ *Downloading...*`, { parse_mode: 'Markdown' });
         
-        const basePath = path.join(config.DOWNLOAD_DIR, `${Date.now()}`);
+        const timestamp = Date.now();
+        const basePath = path.join(config.DOWNLOAD_DIR, `${timestamp}`);
         const isAudio = action === 'aud';
         const finalFile = `${basePath}.${isAudio ? 'mp3' : 'mp4'}`;
 
@@ -76,12 +61,25 @@ const handleCallback = async (ctx) => {
             }
 
             const stats = fs.statSync(finalFile);
-            if (stats.size > 49.5 * 1024 * 1024) await ctx.editMessageText("⚠️ File > 50MB");
-            else {
+            if (stats.size > 49.5 * 1024 * 1024) {
+                await ctx.editMessageText("⚠️ File > 50MB");
+            } else {
                 await ctx.editMessageText("📤 *Uploading...*", { parse_mode: 'Markdown' });
-                if (isAudio) await ctx.replyWithAudio({ source: finalFile });
-                else await ctx.replyWithVideo({ source: finalFile });
+                
+                let sent;
+                if (isAudio) sent = await ctx.replyWithAudio({ source: finalFile });
+                else sent = await ctx.replyWithVideo({ source: finalFile }, { caption: '✨ Downloaded via Media Banai' });
+                
+                // CACHE VIDEO/AUDIO
+                if (sent) {
+                    const fileId = isAudio ? sent.audio.file_id : sent.video.file_id;
+                    const type = isAudio ? 'audio' : 'video';
+                    db.setCache(url, fileId, type);
+                    db.addDownload();
+                }
+
                 await ctx.deleteMessage();
+                console.log(`✅ Upload & Cache Complete`);
             }
         } catch (e) {
             console.error("DL Error:", e);
