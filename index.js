@@ -4,98 +4,82 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 
-// Import Version
 const { version } = require('./package.json');
-
-// Import Modules
 const config = require('./src/config/settings');
 const logger = require('./src/utils/logger');
 const downloader = require('./src/utils/downloader');
 
-// Import Services
+// Services
 const redditService = require('./src/services/reddit');
 const twitterService = require('./src/services/twitter');
-const instagramService = require('./src/services/instagram'); // NEW
-const tiktokService = require('./src/services/tiktok');       // NEW
+const instagramService = require('./src/services/instagram');
+const tiktokService = require('./src/services/tiktok');
+const musicService = require('./src/services/music'); // If you have it
 
-// Init Logger
 logger.init();
-
 const bot = new Telegraf(config.BOT_TOKEN);
 const app = express();
 
 if (!fs.existsSync(config.DOWNLOAD_DIR)) fs.mkdirSync(config.DOWNLOAD_DIR, { recursive: true });
 
-// --- UTILITIES ---
+// --- HANDLERS ---
 const resolveRedirect = async (url) => {
-    if (!url.includes('/s/')) return url;
+    if (!url.includes('/s/') && !url.includes('vm.tiktok') && !url.includes('vt.tiktok')) return url;
     try {
         const res = await axios.head(url, { maxRedirects: 0, validateStatus: s => s >= 300 && s < 400, headers: { 'User-Agent': config.UA_ANDROID } });
         return res.headers.location || url;
     } catch (e) { return url; }
 };
 
-// --- HANDLER ---
-bot.start((ctx) => ctx.reply(`👋 **Media Banai Bot v${version}**\n\n✅ Reddit & Twitter\n✅ Instagram & TikTok\n\nSend a link!`));
+bot.start((ctx) => ctx.reply(`👋 **Media Banai v${version}**\n\n✅ Reddit, Twitter\n✅ Instagram, TikTok\n\nSend a link!`));
 
 bot.on('text', async (ctx) => {
     const match = ctx.message.text.match(config.URL_REGEX);
     if (!match) return;
 
-    console.log(`📩 New Request: ${match[0]}`);
+    console.log(`📩 Request: ${match[0]}`);
     const msg = await ctx.reply("🔍 *Analyzing...*", { parse_mode: 'Markdown', reply_to_message_id: ctx.message.message_id });
 
     try {
-        const inputUrl = match[0];
-        const fullUrl = await resolveRedirect(inputUrl);
+        const fullUrl = await resolveRedirect(match[0]);
         let media = null;
 
-        // --- ROUTING LOGIC ---
-        if (fullUrl.includes('x.com') || fullUrl.includes('twitter.com')) {
-            media = await twitterService.extract(fullUrl);
-        } else if (fullUrl.includes('reddit.com') || fullUrl.includes('redd.it')) {
-            media = await redditService.extract(fullUrl);
-        } else if (fullUrl.includes('instagram.com')) {
-            media = await instagramService.extract(fullUrl);
-        } else if (fullUrl.includes('tiktok.com')) {
-            media = await tiktokService.extract(fullUrl);
-        }
+        // Routing
+        if (fullUrl.includes('x.com') || fullUrl.includes('twitter.com')) media = await twitterService.extract(fullUrl);
+        else if (fullUrl.includes('reddit.com') || fullUrl.includes('redd.it')) media = await redditService.extract(fullUrl);
+        else if (fullUrl.includes('instagram.com')) media = await instagramService.extract(fullUrl);
+        else if (fullUrl.includes('tiktok.com')) media = await tiktokService.extract(fullUrl);
+        else if (fullUrl.includes('spotify') || fullUrl.includes('soundcloud')) media = await musicService.extract(fullUrl);
 
-        if (!media) throw new Error("Media not found");
+        if (!media) throw new Error("Not found");
 
+        // Buttons
         const buttons = [];
         let text = `✅ *${(media.title).substring(0, 50)}...*`;
 
         if (media.type === 'gallery') {
-            text += `\n📚 **Gallery:** ${media.items.length} items`;
+            text += `\n📚 **Album:** ${media.items.length} items`;
             buttons.push([Markup.button.callback(`📥 Download Album`, `alb|all`)]);
         } 
         else if (media.type === 'image') {
             buttons.push([Markup.button.callback(`🖼 Download Image`, `img|single`)]);
         } 
         else if (media.type === 'video') {
-            // Check for qualities (Insta/TikTok usually just have 'best')
-            if (media.formats && media.formats.length > 0) {
+            if (media.formats?.length > 0 && !fullUrl.includes('tiktok') && !fullUrl.includes('instagram')) {
+                // Show qualities for Reddit/Twitter
                 const formats = media.formats.filter(f => f.ext === 'mp4' && f.height).sort((a,b) => b.height - a.height).slice(0, 5);
-                
-                // Only show resolution buttons if we have valid height data
-                // TikTok/Insta often give many duplicate formats, so we stick to 'best' for them mostly
-                if (formats.length > 0 && !fullUrl.includes('tiktok') && !fullUrl.includes('instagram')) {
-                     formats.forEach(f => {
-                        if(!buttons.some(b => b[0].text.includes(f.height))) 
-                            buttons.push([Markup.button.callback(`📹 ${f.height}p`, `vid|${f.format_id}`)]);
-                    });
-                }
+                formats.forEach(f => {
+                    if(!buttons.some(b => b[0].text.includes(f.height))) 
+                        buttons.push([Markup.button.callback(`📹 ${f.height}p`, `vid|${f.format_id}`)]);
+                });
             }
-            
-            // If no specific buttons added, add default "Download Video"
-            if (buttons.length === 0) {
-                buttons.push([Markup.button.callback("📹 Download Video", `vid|best`)]);
-            }
+            if (buttons.length === 0) buttons.push([Markup.button.callback("📹 Download Video", `vid|best`)]);
             buttons.push([Markup.button.callback("🎵 Audio Only", "aud|best")]);
         }
 
-        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, `${text}\n[Source](${media.url || media.source})`, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) });
+        const safeUrl = (media.type === 'video' && media.url) ? media.url : (media.source || fullUrl);
+        
+        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, `${text}\n[Source](${safeUrl})`, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) });
 
     } catch (e) {
         console.error(e);
@@ -109,25 +93,60 @@ bot.on('callback_query', async (ctx) => {
     const url = ctx.callbackQuery.message.entities?.find(e => e.type === 'text_link')?.url;
     if (!url) return ctx.answerCbQuery("❌ Expired");
 
+    // --- IMAGE DOWNLOADER (Fix for Instagram) ---
     if (action === 'img') {
-        const sent = await ctx.replyWithPhoto(url);
-        if(!sent) await ctx.replyWithDocument(url);
-        await ctx.deleteMessage();
-    } 
-    else if (action === 'alb') {
-        await ctx.answerCbQuery("🚀 Processing...");
-        // For albums, we assume Reddit/Twitter mostly. Re-extraction is safest.
-        let media = null;
-        if (url.includes('x.com') || url.includes('twitter')) media = await twitterService.extract(url);
-        else media = await redditService.extract(url);
-
-        if (media?.type === 'gallery') {
+        await ctx.answerCbQuery("🚀 Downloading...");
+        const timestamp = Date.now();
+        const imgPath = path.join(config.DOWNLOAD_DIR, `${timestamp}.jpg`);
+        
+        try {
+            // Download Locally First!
+            await downloader.downloadFile(url, imgPath);
+            await ctx.replyWithPhoto({ source: imgPath });
             await ctx.deleteMessage();
-            for (const item of media.items) {
-                try { if(item.type==='video') await ctx.replyWithVideo(item.url); else await ctx.replyWithDocument(item.url); } catch {}
-            }
+        } catch (e) {
+            console.error("Image send failed:", e);
+            // Fallback to URL method
+            try { await ctx.replyWithPhoto(url); } catch { await ctx.replyWithDocument(url); }
+        } finally {
+            if (fs.existsSync(imgPath)) fs.unlinkSync(imgPath);
         }
     } 
+    // --- ALBUM DOWNLOADER ---
+    else if (action === 'alb') {
+        await ctx.answerCbQuery("🚀 Processing...");
+        await ctx.editMessageText("⏳ *Fetching Album...*", { parse_mode: 'Markdown' });
+        
+        // Re-Extract to get items list
+        let media = null;
+        if (url.includes('tiktok.com')) media = await tiktokService.extract(url);
+        else if (url.includes('instagram.com')) media = await instagramService.extract(url);
+        else if (url.includes('reddit.com')) media = await redditService.extract(url);
+        else if (url.includes('x.com')) media = await twitterService.extract(url);
+
+        if (media?.type === 'gallery') {
+            await ctx.editMessageText(`📤 *Sending ${media.items.length} items...*`, { parse_mode: 'Markdown' });
+            
+            for (const item of media.items) {
+                try {
+                    if (item.type === 'video') {
+                        // Send Video URL directly (usually works)
+                        await ctx.replyWithVideo(item.url);
+                    } else {
+                        // Download Image locally (Fix for Insta)
+                        const tmpName = path.join(config.DOWNLOAD_DIR, `gal_${Date.now()}_${Math.random()}.jpg`);
+                        await downloader.downloadFile(item.url, tmpName);
+                        await ctx.replyWithDocument({ source: tmpName }); // Doc for full quality
+                        fs.unlinkSync(tmpName);
+                    }
+                } catch (e) { console.error("Gallery item failed"); }
+            }
+            await ctx.deleteMessage();
+        } else {
+            await ctx.editMessageText("❌ Failed to load gallery.");
+        }
+    } 
+    // --- VIDEO DOWNLOADER ---
     else {
         await ctx.answerCbQuery("🚀 Downloading...");
         await ctx.editMessageText(`⏳ *Downloading...*`, { parse_mode: 'Markdown' });
@@ -138,26 +157,35 @@ bot.on('callback_query', async (ctx) => {
         const finalFile = `${basePath}.${isAudio ? 'mp3' : 'mp4'}`;
 
         try {
-            console.log(`⬇️ Downloading: ${url}`);
-            await downloader.download(url, isAudio, id, basePath);
+            // Check if URL is direct file (TikTok/Insta) or needs yt-dlp extraction
+            if (id === 'best' && (url.includes('.mp4') || url.includes('.mp3'))) {
+                // It's a direct link, just download it file-style
+                await downloader.downloadFile(url, finalFile);
+            } else {
+                // Use yt-dlp
+                await downloader.download(url, isAudio, id, basePath);
+            }
+
             const stats = fs.statSync(finalFile);
-            
             if (stats.size > 49.5 * 1024 * 1024) await ctx.editMessageText("⚠️ File > 50MB");
             else {
                 await ctx.editMessageText("📤 *Uploading...*", { parse_mode: 'Markdown' });
                 if (isAudio) await ctx.replyWithAudio({ source: finalFile });
                 else await ctx.replyWithVideo({ source: finalFile });
                 await ctx.deleteMessage();
-                console.log(`✅ Uploaded: ${url}`);
             }
-        } catch (e) { console.error(e); await ctx.editMessageText("❌ Error"); } 
-        finally { if (fs.existsSync(finalFile)) fs.unlinkSync(finalFile); }
+        } catch (e) {
+            console.error("DL Error:", e);
+            await ctx.editMessageText("❌ Error.");
+        } finally {
+            if (fs.existsSync(finalFile)) fs.unlinkSync(finalFile);
+        }
     }
 });
 
-// --- LIVE TAIL PAGE ---
+// --- SERVER ---
 app.get('/api/logs', (req, res) => res.json(logger.getLogs()));
-app.get('/', (req, res) => res.send(`<html><head><meta http-equiv="refresh" content="2"><title>Media Banai v${version}</title></head><body style="background:#0d1117;color:#c9d1d9;font-family:monospace;padding:20px"><h1>🚀 Media Banai Bot v${version}</h1><div id="logs">Loading...</div><script>fetch('/api/logs').then(r=>r.json()).then(d=>document.getElementById('logs').innerHTML=d.map(l=>\`<div style="border-bottom:1px solid #30363d;padding:2px"><span style="color:#8b949e">[\${l.time}]</span> <span style="color:\${l.type==='ERROR'?'#f85149':'#3fb950'}">\${l.type}</span> \${l.message}</div>\`).join(''))</script></body></html>`));
+app.get('/', (req, res) => res.send(`<html><head><meta http-equiv="refresh" content="2"></head><body style="background:black;color:#0f0;font-family:monospace"><h1>🚀 Media Banai Live</h1><div id="logs">Loading...</div><script>fetch('/api/logs').then(r=>r.json()).then(d=>document.getElementById('logs').innerHTML=d.map(l=>\`<div>[\${l.time}] \${l.message}</div>\`).join(''))</script></body></html>`));
 
 if (process.env.NODE_ENV === 'production') {
     app.use(bot.webhookCallback('/bot'));
