@@ -2,43 +2,53 @@ const axios = require('axios');
 
 class TikTokService {
     async extract(url) {
+        // STRATEGY 1: TikWM (Rich Data, Slideshow support)
         try {
-            console.log(`🎵 TikTok Service: ${url}`);
-            
-            // TikWM API (Best for No-Watermark & Slideshows)
-            const apiUrl = `https://www.tikwm.com/api/?url=${encodeURIComponent(url)}`;
-            const { data } = await axios.get(apiUrl);
+            console.log(`🎵 TikTok Service (TikWM): ${url}`);
+            const { data } = await axios.get(`https://www.tikwm.com/api/?url=${encodeURIComponent(url)}`);
 
-            if (!data || data.code !== 0) {
-                console.log("⚠️ TikWM failed. Using fallback.");
-                return null;
-            }
-
-            const v = data.data;
-
-            // 1. Slideshow (Gallery)
-            if (v.images && v.images.length > 0) {
+            if (data && data.code === 0) {
+                const v = data.data;
+                // Slideshow
+                if (v.images && v.images.length > 0) {
+                    return {
+                        type: 'gallery',
+                        title: v.title || 'TikTok Slideshow',
+                        source: url,
+                        items: v.images.map(img => ({ type: 'image', url: img }))
+                    };
+                }
+                // Video
                 return {
-                    type: 'gallery',
-                    title: v.title || 'TikTok Slideshow',
+                    type: 'video',
+                    title: v.title || 'TikTok Video',
                     source: url,
-                    items: v.images.map(img => ({ type: 'image', url: img }))
+                    url: v.play, // HD No-Watermark
+                    cover: v.cover
                 };
             }
+        } catch (e) { console.log("⚠️ TikWM failed, trying fallback..."); }
 
-            // 2. Video
-            return {
-                type: 'video',
-                title: v.title || 'TikTok Video',
-                source: url,
-                url: v.play, // Direct HD Link
-                cover: v.cover
-            };
+        // STRATEGY 2: Cobalt (Fallback)
+        try {
+            console.log(`🎵 TikTok Service (Cobalt): ${url}`);
+            const { data } = await axios.post('https://api.cobalt.tools/api/json', {
+                url: url
+            }, {
+                headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' }
+            });
 
-        } catch (e) {
-            console.error("TikTok Error:", e.message);
-            return null;
-        }
+            if (data.url) {
+                return {
+                    type: 'video',
+                    title: 'TikTok Video',
+                    source: url,
+                    url: data.url
+                };
+            }
+        } catch (e) { console.error("TikTok Fallback Error:", e.message); }
+
+        return null;
     }
 }
 
