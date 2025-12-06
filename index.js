@@ -16,7 +16,7 @@ const downloader = require('./src/utils/downloader');
 const redditService = require('./src/services/reddit');
 const twitterService = require('./src/services/twitter');
 const instagramService = require('./src/services/instagram');
-const tiktokService = require('./src/services/tiktok'); // IMPORTED
+const tiktokService = require('./src/services/tiktok');
 
 // Init Logger
 logger.init();
@@ -28,9 +28,7 @@ if (!fs.existsSync(config.DOWNLOAD_DIR)) fs.mkdirSync(config.DOWNLOAD_DIR, { rec
 
 // --- UTILITIES ---
 const resolveRedirect = async (url) => {
-    // We allow TikTok short links (vm/vt) to pass through without expanding
-    // because TikWM API handles them better than we can.
-    if (!url.includes('/s/')) return url;
+    if (!url.includes('/s/') && !url.includes('vm.tiktok') && !url.includes('vt.tiktok')) return url;
     try {
         const res = await axios.head(url, { maxRedirects: 0, validateStatus: s => s >= 300 && s < 400, headers: { 'User-Agent': config.UA_ANDROID } });
         return res.headers.location || url;
@@ -38,13 +36,13 @@ const resolveRedirect = async (url) => {
 };
 
 // --- HANDLER ---
-bot.start((ctx) => ctx.reply(`👋 **Media Banai Bot v${version}**\n\n✅ Reddit, Twitter\n✅ Instagram, TikTok\n\nSend a link!`));
+bot.start((ctx) => ctx.reply(`👋 **Media Banai Bot v${version}**\n\n✅ Reddit & Twitter\n✅ Instagram & TikTok\n\nSend a link!`));
 
 bot.on('text', async (ctx) => {
     const match = ctx.message.text.match(config.URL_REGEX);
     if (!match) return;
 
-    console.log(`📩 New Request: ${match[0]}`);
+    console.log(`📩 Request: ${match[0]}`);
     const msg = await ctx.reply("🔍 *Analyzing...*", { parse_mode: 'Markdown', reply_to_message_id: ctx.message.message_id });
 
     try {
@@ -60,7 +58,7 @@ bot.on('text', async (ctx) => {
         } else if (fullUrl.includes('instagram.com')) {
             media = await instagramService.extract(fullUrl);
         } else if (fullUrl.includes('tiktok.com')) {
-            media = await tiktokService.extract(fullUrl); // ROUTE TO TIKTOK
+            media = await tiktokService.extract(fullUrl);
         }
 
         if (!media) throw new Error("Media not found");
@@ -76,9 +74,7 @@ bot.on('text', async (ctx) => {
             buttons.push([Markup.button.callback(`🖼 Download Image`, `img|single`)]);
         } 
         else if (media.type === 'video') {
-            // TikTok videos usually don't have multiple resolutions in the API
-            // So we just show the default buttons
-            if (media.formats && media.formats.length > 0) {
+            if (media.formats && media.formats.length > 0 && !fullUrl.includes('tiktok') && !fullUrl.includes('instagram')) {
                 const formats = media.formats.filter(f => f.ext === 'mp4' && f.height).sort((a,b) => b.height - a.height).slice(0, 5);
                 formats.forEach(f => {
                     if(!buttons.some(b => b[0].text.includes(f.height))) 
@@ -89,10 +85,9 @@ bot.on('text', async (ctx) => {
             buttons.push([Markup.button.callback("🎵 Audio Only", "aud|best")]);
         }
 
-        // IMPORTANT: For TikTok, we use the API URL (no watermark) as the source
-        const targetUrl = (media.type === 'video' && media.url) ? media.url : (media.source || fullUrl);
+        const safeUrl = (media.type === 'video' && media.url) ? media.url : (media.source || fullUrl);
 
-        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, `${text}\n[Source](${targetUrl})`, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) });
+        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, `${text}\n[Source](${safeUrl})`, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) });
 
     } catch (e) {
         console.error(e);
@@ -104,16 +99,32 @@ bot.on('text', async (ctx) => {
 bot.on('callback_query', async (ctx) => {
     const [action, id] = ctx.callbackQuery.data.split('|');
     const url = ctx.callbackQuery.message.entities?.find(e => e.type === 'text_link')?.url;
-    if (!url) return ctx.answerCbQuery("❌ Link expired.");
+    if (!url) return ctx.answerCbQuery("❌ Expired");
 
+    // --- INSTAGRAM IMAGE FIX ---
     if (action === 'img') {
-        const sent = await ctx.replyWithPhoto(url);
-        if(!sent) await ctx.replyWithDocument(url);
-        await ctx.deleteMessage();
+        await ctx.answerCbQuery("🚀 Downloading...");
+        const timestamp = Date.now();
+        const imgPath = path.join(config.DOWNLOAD_DIR, `${timestamp}.jpg`);
+        
+        try {
+            // 1. Download to Render Server first
+            await downloader.downloadFile(url, imgPath);
+            // 2. Upload Local File to Telegram
+            await ctx.replyWithPhoto({ source: imgPath });
+            await ctx.deleteMessage();
+        } catch (e) {
+            console.error("Image dl failed:", e.message);
+            // Fallback
+            try { await ctx.replyWithDocument(url); } catch {}
+        } finally {
+            if (fs.existsSync(imgPath)) fs.unlinkSync(imgPath);
+        }
     } 
     else if (action === 'alb') {
         await ctx.answerCbQuery("🚀 Processing...");
-        // Re-extract logic
+        await ctx.editMessageText("⏳ *Fetching Album...*", { parse_mode: 'Markdown' });
+        
         let media = null;
         if (url.includes('tiktok.com')) media = await tiktokService.extract(url);
         else if (url.includes('instagram.com')) media = await instagramService.extract(url);
@@ -121,10 +132,22 @@ bot.on('callback_query', async (ctx) => {
         else media = await redditService.extract(url);
 
         if (media?.type === 'gallery') {
-            await ctx.deleteMessage();
+            await ctx.editMessageText(`📤 *Sending ${media.items.length} items...*`, { parse_mode: 'Markdown' });
             for (const item of media.items) {
-                try { if(item.type==='video') await ctx.replyWithVideo(item.url); else await ctx.replyWithDocument(item.url); } catch {}
+                try {
+                    if (item.type === 'video') await ctx.replyWithVideo(item.url);
+                    else {
+                        // Download Gallery Image Locally too
+                        const tmpName = path.join(config.DOWNLOAD_DIR, `gal_${Date.now()}_${Math.random()}.jpg`);
+                        await downloader.downloadFile(item.url, tmpName);
+                        await ctx.replyWithDocument({ source: tmpName });
+                        fs.unlinkSync(tmpName);
+                    }
+                } catch (e) {}
             }
+            await ctx.deleteMessage();
+        } else {
+            await ctx.editMessageText("❌ Failed.");
         }
     } 
     else {
@@ -137,22 +160,23 @@ bot.on('callback_query', async (ctx) => {
         const finalFile = `${basePath}.${isAudio ? 'mp3' : 'mp4'}`;
 
         try {
-            // For TikTok, the URL is usually the direct file already (thanks to API)
-            // But downloader.download handles direct links perfectly fine too.
-            await downloader.download(url, isAudio, id, basePath);
+            if (id === 'best' && (url.includes('.mp4') || url.includes('.mp3'))) {
+                await downloader.downloadFile(url, finalFile);
+            } else {
+                await downloader.download(url, isAudio, id, basePath);
+            }
 
             const stats = fs.statSync(finalFile);
-            if (stats.size > 49.5 * 1024 * 1024) {
-                await ctx.editMessageText("⚠️ File > 50MB (Telegram Limit).");
-            } else {
+            if (stats.size > 49.5 * 1024 * 1024) await ctx.editMessageText("⚠️ File > 50MB");
+            else {
                 await ctx.editMessageText("📤 *Uploading...*", { parse_mode: 'Markdown' });
                 if (isAudio) await ctx.replyWithAudio({ source: finalFile });
                 else await ctx.replyWithVideo({ source: finalFile });
                 await ctx.deleteMessage();
             }
         } catch (e) {
-            console.error("Download Error:", e);
-            await ctx.editMessageText("❌ Error during download.");
+            console.error("DL Error:", e);
+            await ctx.editMessageText("❌ Error.");
         } finally {
             if (fs.existsSync(finalFile)) fs.unlinkSync(finalFile);
         }
