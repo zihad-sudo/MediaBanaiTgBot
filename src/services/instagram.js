@@ -1,45 +1,58 @@
-const downloader = require('../utils/downloader');
+const axios = require('axios');
 
 class InstagramService {
     async extract(url) {
         try {
             console.log(`📸 Instagram Service: ${url}`);
-            const info = await downloader.getInfo(url);
+            
+            // Use Cobalt API (Stable Public Instance)
+            // It bypasses the 403/Login blocks that yt-dlp faces
+            const { data } = await axios.post('https://api.cobalt.tools/api/json', {
+                url: url,
+                vCodec: 'h264',
+                vQuality: '720'
+            }, {
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                }
+            });
 
-            const baseInfo = {
-                title: info.title || 'Instagram Media',
+            if (data.status === 'error' || !data.url) {
+                // If main API fails, return null (Controller will handle error)
+                console.error("Instagram API Error:", data.text);
+                return null;
+            }
+
+            const result = {
+                title: 'Instagram Media',
                 source: url,
-                formats: info.formats || []
+                formats: []
             };
 
-            // 1. Carousel / Gallery (Multiple Images/Videos)
-            if (info._type === 'playlist' && info.entries) {
-                const items = info.entries.map(entry => ({
-                    type: entry.ext === 'mp4' ? 'video' : 'image',
-                    url: entry.url
+            // Detect Type based on what Cobalt returns
+            // Cobalt returns a 'picker' array for galleries
+            if (data.picker) {
+                result.type = 'gallery';
+                result.items = data.picker.map(item => ({
+                    type: item.type === 'photo' ? 'image' : 'video',
+                    url: item.url
                 }));
-                return { ...baseInfo, type: 'gallery', items };
+            } 
+            // Single Item
+            else {
+                // Determine if it's a video or image based on URL extension or type field
+                const isVideo = data.url.includes('.mp4') || data.type === 'video'; // Cobalt doesn't always send 'type'
+                
+                result.type = isVideo ? 'video' : 'image';
+                result.url = data.url;
             }
 
-            // 2. Single Video
-            if (info.ext === 'mp4' || info.url?.includes('.mp4')) {
-                return {
-                    ...baseInfo,
-                    type: 'video',
-                    url: info.url // Direct Video Link
-                };
-            }
-
-            // 3. Single Image
-            // yt-dlp puts the image link in 'url' for simple posts
-            return {
-                ...baseInfo,
-                type: 'image',
-                url: info.url
-            };
+            return result;
 
         } catch (e) {
-            console.error("Instagram Error:", e.message);
+            console.error("Instagram Service Error:", e.message);
             return null;
         }
     }
