@@ -11,8 +11,12 @@ class TwitterService {
 
             if (!tweet || !tweet.media) return null;
 
+            // CAPTURE AUTHOR HERE
+            const authorName = tweet.author?.name || tweet.user?.name || 'Twitter User';
+
             const baseInfo = {
                 title: tweet.text || 'Twitter Media',
+                author: authorName, // Added Author
                 source: url,
                 type: 'video' // default
             };
@@ -34,22 +38,19 @@ class TwitterService {
                 return { ...baseInfo, type: 'image', url: tweet.media.photos[0].url };
             }
 
-            // C. Single Video (With Fail-Safe)
+            // C. Single Video
             if (tweet.media.videos && tweet.media.videos.length > 0) {
                 const videoData = {
                     ...baseInfo,
                     type: 'video',
-                    url: tweet.media.videos[0].url // Direct MP4 link from API
+                    url: tweet.media.videos[0].url 
                 };
 
-                // Try to get Qualities via yt-dlp
                 try {
                     const info = await downloader.getInfo(url);
-                    videoData.formats = info.formats; // Success: User gets resolution options
+                    videoData.formats = info.formats; 
                 } catch (e) {
-                    console.log("⚠️ Twitter Quality Check Failed. Falling back to Direct Link Mode.");
-                    // Fail-safe: We return videoData WITHOUT 'formats'.
-                    // The bot will see this and show the "Download Video" fallback button.
+                    console.log("⚠️ Twitter Quality Check Failed. Falling back to Direct Link.");
                 }
                 return videoData;
             }
