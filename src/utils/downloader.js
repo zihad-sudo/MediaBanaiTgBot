@@ -1,7 +1,7 @@
 const { exec } = require('child_process');
 const util = require('util');
 const fs = require('fs');
-const axios = require('axios');
+const axios = require('axios'); // Ensure axios is imported
 const config = require('../config/settings');
 
 const execPromise = util.promisify(exec);
@@ -44,11 +44,11 @@ class Downloader {
         await this.execute(`${typeArg} "${url}"`);
     }
 
-    // --- FIXED IMAGE DOWNLOADER ---
+    // --- NEW: Image Downloader (Fixes Instagram) ---
     async downloadFile(url, outputPath) {
         const writer = fs.createWriteStream(outputPath);
         
-        // We MUST use a real browser User-Agent or Instagram/CDN will block the download (403)
+        // Headers are CRITICAL for Instagram
         const response = await axios({
             url,
             method: 'GET',
@@ -70,5 +70,3 @@ class Downloader {
 }
 
 module.exports = new Downloader();
-
-
