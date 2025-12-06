@@ -10,12 +10,13 @@ module.exports = {
     // Paths
     DOWNLOAD_DIR: path.join(__dirname, '../../downloads'),
     COOKIE_PATH: path.join(__dirname, '../../cookies.txt'),
+    DB_PATH: path.join(__dirname, '../../database.json'), // NEW: Database File
     
     // Identity
     UA_ANDROID: 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
     
-    // UPDATED REGEX: Added TikTok (vm, vt, regular)
-    URL_REGEX: /(https?:\/\/(?:www\.|old\.|mobile\.|m\.)?(?:reddit\.com|redd\.it|x\.com|twitter\.com|instagram\.com|tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com)\/[^\s]+)/i,
+    // Regex (Updated for Spotify & SoundCloud)
+    URL_REGEX: /(https?:\/\/(?:www\.|old\.|mobile\.|m\.)?(?:reddit\.com|redd\.it|x\.com|twitter\.com|instagram\.com|tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com|spotify\.com|soundcloud\.com)\/[^\s]+)/i,
     
     // Reddit Mirrors
     REDDIT_MIRRORS: [
