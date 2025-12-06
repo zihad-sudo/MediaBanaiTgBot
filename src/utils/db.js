@@ -52,7 +52,7 @@ module.exports = {
 
     // Caching Logic
     getCache: (url) => {
-        // We clean the URL to ensure matches (remove tracking params)
+        // We clean the URL to ensure matches (remove query params)
         const clean = url.split('?')[0]; 
         return db.cache.get(clean);
     },
