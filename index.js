@@ -4,7 +4,7 @@ const fs = require('fs');
 // 1. Config & Logger
 const config = require('./src/config/settings');
 const logger = require('./src/utils/logger');
-logger.init(); // Must be first
+logger.init();
 
 // 2. Import Controllers
 const messageHandler = require('./src/controllers/messageHandler');
