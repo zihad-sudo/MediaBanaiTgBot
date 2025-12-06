@@ -20,10 +20,19 @@ const generateCaption = (text, platform, sourceUrl) => {
     return `🎬 <b>${platform} media</b> | <a href="${sourceUrl}">source</a>\n\n<blockquote>${safeText}</blockquote>`;
 };
 
+// --- HELPER: BUTTONS ---
+const getTranslationButtons = () => {
+    return Markup.inlineKeyboard([
+        [
+            Markup.button.callback('🇺🇸 English', 'trans|en'),
+            Markup.button.callback('🇧🇩 Bangla', 'trans|bn')
+        ]
+    ]);
+};
+
 // --- SHARED DOWNLOAD FUNCTION ---
 const performDownload = async (ctx, url, isAudio, qualityId, botMsgId, captionText, userMsgId) => {
     try {
-        // Delete User Message if possible
         if (userMsgId) {
             try { await ctx.telegram.deleteMessage(ctx.chat.id, userMsgId); } catch (err) {}
         }
@@ -50,13 +59,11 @@ const performDownload = async (ctx, url, isAudio, qualityId, botMsgId, captionTe
 
         await ctx.telegram.editMessageText(ctx.chat.id, botMsgId, null, "📤 *Uploading...*", { parse_mode: 'Markdown' });
         
-        // --- ADD TRANSLATE BUTTON HERE ---
+        // --- ADD DUAL TRANSLATE BUTTONS ---
         const extraOptions = { 
             caption: captionText || '🚀 Downloaded via Media Banai',
             parse_mode: 'HTML',
-            ...Markup.inlineKeyboard([
-                [Markup.button.callback('🔠 Translate to English', 'trans')]
-            ])
+            ...getTranslationButtons()
         };
 
         if (isAudio) {
@@ -107,7 +114,6 @@ const handleMessage = async (ctx) => {
         const safeUrl = media.url || media.source;
         const finalTitleText = userCustomCaption.length > 0 ? userCustomCaption : media.title;
         
-        // Generate UI (No translation yet, button will handle it)
         const prettyCaption = generateCaption(finalTitleText, platformName, media.source);
 
         // --- AUTO-DOWNLOAD ---
@@ -157,44 +163,44 @@ const handleCallback = async (ctx) => {
     const data = ctx.callbackQuery.data;
     const [action, id] = data.split('|');
     
-    // --- TRANSLATE BUTTON LOGIC ---
+    // --- TRANSLATE BUTTON LOGIC (Dynamic Lang) ---
     if (action === 'trans') {
+        const targetLang = id; // 'en' or 'bn'
         const messageCaption = ctx.callbackQuery.message.caption;
         const entities = ctx.callbackQuery.message.caption_entities;
         
         if (!messageCaption) return ctx.answerCbQuery("No text to translate.");
 
-        await ctx.answerCbQuery("🔄 Translating...");
+        await ctx.answerCbQuery(targetLang === 'bn' ? "🇧🇩 Translating..." : "🇺🇸 Translating...");
 
-        // 1. Recover Source URL from entities
+        // 1. Recover Source URL
         const linkEntity = entities?.find(e => e.type === 'text_link');
         const sourceUrl = linkEntity ? linkEntity.url : "https://google.com";
         
-        // 2. Recover Platform Name (Simple Check)
+        // 2. Recover Platform Name
         let platform = 'Social';
         if (messageCaption.toLowerCase().includes('twitter')) platform = 'Twitter';
         else if (messageCaption.toLowerCase().includes('reddit')) platform = 'Reddit';
 
-        // 3. Extract the actual content (Remove Header)
-        // Header is roughly "🎬 Platform media | source"
-        // We assume the content starts after the first double newline or is the bulk of text
-        // Simplest way: Split by newline, take everything from index 2 onwards
+        // 3. Extract Content
         const lines = messageCaption.split('\n');
         let contentToTranslate = messageCaption;
-        
         if (lines.length > 2) {
             contentToTranslate = lines.slice(2).join('\n').trim();
         }
 
         try {
-            // 4. Translate
-            const res = await translate(contentToTranslate, { to: 'en', autoCorrect: true });
+            // 4. Translate to dynamic target language
+            const res = await translate(contentToTranslate, { to: targetLang, autoCorrect: true });
             
             // 5. Update Caption
             const newCaption = generateCaption(res.text, platform, sourceUrl);
             
-            // Edit the caption and REMOVE the translate button
-            await ctx.editMessageCaption(newCaption, { parse_mode: 'HTML' });
+            // We keep the buttons so user can switch between English and Bangla
+            await ctx.editMessageCaption(newCaption, { 
+                parse_mode: 'HTML',
+                ...getTranslationButtons()
+            });
             
         } catch (e) {
             console.error("Translation Error", e);
@@ -203,7 +209,7 @@ const handleCallback = async (ctx) => {
         return;
     }
 
-    // --- STANDARD DOWNLOAD LOGIC ---
+    // --- STANDARD LOGIC ---
     const url = ctx.callbackQuery.message.entities?.find(e => e.type === 'text_link')?.url;
     if (!url) return ctx.answerCbQuery("❌ Link expired.");
 
@@ -227,7 +233,7 @@ const handleCallback = async (ctx) => {
             await ctx.replyWithPhoto(url, { 
                 caption: niceCaption, 
                 parse_mode: 'HTML',
-                ...Markup.inlineKeyboard([[Markup.button.callback('🔠 Translate to English', 'trans')]])
+                ...getTranslationButtons() // Add buttons to image too
             });
             if(userOriginalMsgId) await ctx.telegram.deleteMessage(ctx.chat.id, userOriginalMsgId).catch(()=>{});
         } 
@@ -235,7 +241,7 @@ const handleCallback = async (ctx) => {
             await ctx.replyWithDocument(url, { 
                 caption: niceCaption, 
                 parse_mode: 'HTML',
-                ...Markup.inlineKeyboard([[Markup.button.callback('🔠 Translate to English', 'trans')]])
+                ...getTranslationButtons() 
             }); 
         }
         await ctx.deleteMessage();
