@@ -42,6 +42,7 @@ const handleMessage = async (ctx) => {
             buttons.push([Markup.button.callback("🎵 Audio Only", "aud|best")]);
         }
 
+        // Store Safe URL
         const safeUrl = (media.type === 'video' && media.url) ? media.url : (media.source || fullUrl);
         
         await ctx.telegram.editMessageText(
