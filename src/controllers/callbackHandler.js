@@ -3,7 +3,7 @@ const path = require('path');
 const config = require('../config/settings');
 const downloader = require('../utils/downloader');
 const extractor = require('../services/extractors');
-const db = require('../utils/db'); // IMPORT DB
+const db = require('../utils/db');
 
 // Services
 const redditService = require('../services/reddit');
@@ -20,15 +20,15 @@ const handleCallback = async (ctx) => {
     // --- IMAGE ---
     if (action === 'img') {
         const sent = await ctx.replyWithPhoto(url).catch(async () => {
-             // Fallback to local download if URL send fails
              const imgPath = path.join(config.DOWNLOAD_DIR, `${Date.now()}.jpg`);
+             // Use downloadFile for images (works for Insta/Reddit usually)
+             // If Reddit images fail, we might need a cookie-aware image downloader later
              await downloader.downloadFile(url, imgPath);
              const s = await ctx.replyWithPhoto({ source: imgPath });
              fs.unlinkSync(imgPath);
              return s;
         });
 
-        // CACHE PHOTO
         if(sent) db.setCache(url, sent.photo[sent.photo.length-1].file_id, 'photo');
         await ctx.deleteMessage();
     } 
@@ -43,7 +43,7 @@ const handleCallback = async (ctx) => {
             }
         }
     } 
-    // --- VIDEO ---
+    // --- VIDEO / AUDIO ---
     else {
         await ctx.answerCbQuery("🚀 Downloading...");
         await ctx.editMessageText(`⏳ *Downloading...*`, { parse_mode: 'Markdown' });
@@ -54,9 +54,15 @@ const handleCallback = async (ctx) => {
         const finalFile = `${basePath}.${isAudio ? 'mp3' : 'mp4'}`;
 
         try {
-            if (id === 'best' && (url.includes('.mp4') || url.includes('.mp3'))) {
+            // FIX: If it's Reddit, FORCE yt-dlp (so Cookies are used)
+            // Even if it looks like a direct file (.mp4)
+            const isReddit = url.includes('redd.it') || url.includes('reddit.com');
+            
+            if (id === 'best' && (url.includes('.mp4') || url.includes('.mp3')) && !isReddit) {
+                // Use Simple Downloader ONLY for non-Reddit files (speed)
                 await downloader.downloadFile(url, finalFile);
             } else {
+                // Use Heavy Downloader (yt-dlp + Cookies) for everything else
                 await downloader.download(url, isAudio, id, basePath);
             }
 
@@ -67,10 +73,10 @@ const handleCallback = async (ctx) => {
                 await ctx.editMessageText("📤 *Uploading...*", { parse_mode: 'Markdown' });
                 
                 let sent;
+                // Add spoiler for potential NSFW content if needed, currently plain
                 if (isAudio) sent = await ctx.replyWithAudio({ source: finalFile });
                 else sent = await ctx.replyWithVideo({ source: finalFile }, { caption: '✨ Downloaded via Media Banai' });
                 
-                // CACHE VIDEO/AUDIO
                 if (sent) {
                     const fileId = isAudio ? sent.audio.file_id : sent.video.file_id;
                     const type = isAudio ? 'audio' : 'video';
@@ -83,7 +89,7 @@ const handleCallback = async (ctx) => {
             }
         } catch (e) {
             console.error("DL Error:", e);
-            await ctx.editMessageText("❌ Error.");
+            await ctx.editMessageText("❌ Download Error.");
         } finally {
             if (fs.existsSync(finalFile)) fs.unlinkSync(finalFile);
         }
