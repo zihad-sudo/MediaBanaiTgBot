@@ -4,7 +4,7 @@ const config = require('../config/settings');
 const downloader = require('../utils/downloader');
 const extractor = require('../services/extractors');
 
-// Services needed for re-extraction (albums)
+// Services for re-extraction
 const redditService = require('../services/reddit');
 const twitterService = require('../services/twitter');
 const instagramService = require('../services/instagram');
@@ -59,7 +59,7 @@ const handleCallback = async (ctx) => {
             await ctx.editMessageText("❌ Failed.");
         }
     } 
-    // --- VIDEO / AUDIO ---
+    // --- VIDEO ---
     else {
         await ctx.answerCbQuery("🚀 Downloading...");
         await ctx.editMessageText(`⏳ *Downloading...*`, { parse_mode: 'Markdown' });
