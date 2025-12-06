@@ -10,7 +10,8 @@
     "telegraf": "^4.16.3",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "axios": "^1.6.8"
+    "axios": "^1.6.8",
+    "google-translate-api-x": "^10.6.0"
   },
   "engines": {
     "node": ">=18.0.0"
