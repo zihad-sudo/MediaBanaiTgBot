@@ -26,10 +26,10 @@ const getTranslationButtons = () => {
     return Markup.inlineKeyboard([[Markup.button.callback('🇺🇸 English', 'trans|en'), Markup.button.callback('🇧🇩 Bangla', 'trans|bn')]]);
 };
 
-// --- 1. BASIC HANDLERS ---
+// --- START & HELP ---
 const handleStart = async (ctx) => {
     db.addUser(ctx);
-    const text = `👋 <b>Welcome to Media Banai!</b>\nI can download from Twitter, Reddit, Instagram & TikTok.\n\n<b>Features:</b>\n• Auto-Split Large Files\n• Real Thumbnails\n• Translation`;
+    const text = `👋 <b>Welcome to Media Banai!</b>\nI can download from Twitter, Reddit, Instagram & TikTok.\n\n<b>Features:</b>\n• Real Thumbnails\n• Auto-Split Large Files\n• Translation`;
     const buttons = Markup.inlineKeyboard([[Markup.button.callback('📚 Help', 'help_msg'), Markup.button.callback('📊 Stats', 'stats_msg')]]);
     if (ctx.callbackQuery) await ctx.editMessageText(text, { parse_mode: 'HTML', ...buttons }).catch(()=>{});
     else await ctx.reply(text, { parse_mode: 'HTML', ...buttons });
@@ -42,12 +42,27 @@ const handleHelp = async (ctx) => {
     else await ctx.reply(text, { parse_mode: 'HTML' });
 };
 
-// --- 2. CONFIG HANDLER (Twitter API) ---
+// --- CONFIG HANDLER (Updated for Destination) ---
 const handleConfig = async (ctx) => {
+    // Only Admin can configure
     if (String(ctx.from.id) !== String(config.ADMIN_ID)) return;
     const text = ctx.message.text;
 
-    // /setup_api KEY USERNAME
+    // ✅ NEW: Set Destination
+    if (text.startsWith('/set_destination')) {
+        let targetId = ctx.chat.id;
+        let title = ctx.chat.title || "Private Chat";
+
+        // Reset Logic
+        if (text.includes('reset')) {
+            targetId = ""; // Empty means default to Admin ID
+            title = "Default (Your Private Chat)";
+        }
+
+        await db.setWebhookTarget(config.ADMIN_ID, targetId);
+        return ctx.reply(`✅ <b>Destination Updated!</b>\nNew Target: <b>${title}</b>\n(ID: ${targetId || 'Default'})`, { parse_mode: 'HTML' });
+    }
+
     if (text.startsWith('/setup_api')) {
         const parts = text.split(' ');
         if (parts.length < 3) return ctx.reply("⚠️ Usage: `/setup_api KEY USERNAME`", { parse_mode: 'Markdown' });
@@ -55,7 +70,6 @@ const handleConfig = async (ctx) => {
         return ctx.reply("✅ <b>API Mode Configured!</b>\nChecking every 1 min.", { parse_mode: 'HTML' });
     }
 
-    // /mode api OR /mode webhook
     if (text.startsWith('/mode')) {
         const mode = text.split(' ')[1];
         if (mode !== 'api' && mode !== 'webhook') return ctx.reply("⚠️ Usage: `/mode api` or `/mode webhook`", { parse_mode: 'Markdown' });
@@ -64,7 +78,7 @@ const handleConfig = async (ctx) => {
     }
 };
 
-// --- 3. DOWNLOADER LOGIC ---
+// --- DOWNLOADER ---
 const performDownload = async (ctx, url, isAudio, qualityId, botMsgId, captionText, userMsgId) => {
     try {
         if (userMsgId && userMsgId !== 0) { try { await ctx.telegram.deleteMessage(ctx.chat.id, userMsgId); } catch (err) {} }
@@ -123,7 +137,6 @@ const performDownload = async (ctx, url, isAudio, qualityId, botMsgId, captionTe
     }
 };
 
-// --- 4. MAIN MESSAGE HANDLER ---
 const handleMessage = async (ctx) => {
     db.addUser(ctx);
     const messageText = ctx.message.text;
@@ -195,7 +208,6 @@ const handleMessage = async (ctx) => {
     }
 };
 
-// --- 5. GHOST MENTION HANDLER ---
 const handleGroupMessage = async (ctx, next) => {
     const messageText = ctx.message.text;
     if (messageText && messageText.startsWith('/setnick')) {
@@ -221,7 +233,6 @@ const handleGroupMessage = async (ctx, next) => {
     return next();
 };
 
-// --- 6. CALLBACK HANDLER ---
 const handleCallback = async (ctx) => {
     db.addUser(ctx);
     const [action, id] = ctx.callbackQuery.data.split('|');
@@ -250,13 +261,7 @@ const handleCallback = async (ctx) => {
     else await performDownload(ctx, url, action === 'aud', id, ctx.callbackQuery.message.message_id, ctx.callbackQuery.message.caption, null);
 };
 
-// EXPORT EVERYTHING (Order matters!)
+// EXPORT
 module.exports = { 
-    handleStart, 
-    handleHelp, 
-    handleConfig, 
-    performDownload, 
-    handleMessage, 
-    handleGroupMessage, 
-    handleCallback 
+    handleMessage, handleCallback, handleGroupMessage, handleStart, handleHelp, performDownload, handleConfig 
 };
