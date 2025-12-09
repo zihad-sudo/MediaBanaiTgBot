@@ -78,18 +78,14 @@ const performDownload = async (ctx, url, isAudio, qualityId, botMsgId, captionTe
         const userId = ctx.callbackQuery ? ctx.callbackQuery.from.id : (ctx.message ? ctx.message.from.id : null);
         if (userId) db.incrementDownloads(userId);
 
-        console.log(`✅ Upload Success`);
         await ctx.telegram.deleteMessage(ctx.chat.id, botMsgId).catch(() => {});
 
     } catch (e) {
-        console.error(`Download Error: ${e.message}`);
         let errorMsg = "❌ Error/Timeout.";
         if (e.message.includes('403')) errorMsg = "❌ Error: Forbidden (Cookies needed?)";
         if (e.message.includes('Sign in')) errorMsg = "❌ Error: Age/Login Restricted.";
-        if (e.message.includes('Video unavailable')) errorMsg = "❌ Error: Video Deleted.";
         
         await ctx.telegram.editMessageText(ctx.chat.id, botMsgId, null, `${errorMsg}\n\nLog: \`${e.message.substring(0, 50)}...\``, { parse_mode: 'Markdown' });
-        
         const basePath = path.join(config.DOWNLOAD_DIR, `${Date.now()}`);
         if (fs.existsSync(`${basePath}.mp4`)) fs.unlinkSync(`${basePath}.mp4`);
     }
@@ -133,9 +129,7 @@ const handleMessage = async (ctx) => {
 
         if (!media) throw new Error("Media not found");
 
-        const prettyCaption = generateCaption(postText || media.title, platformName, media.source, flagEmoji);
-
-        // --- ✅ NEW LOGIC: ALWAYS SHOW BUTTONS FOR VIDEO ---
+        // --- ✅ NEW LOGIC: ALWAYS SHOW BUTTONS ---
         const buttons = [];
         let previewText = `✅ ${flagEmoji} *${(media.title || 'Media').substring(0, 50)}...*`;
 
@@ -229,5 +223,4 @@ const handleCallback = async (ctx) => {
     else await performDownload(ctx, url, action === 'aud', id, ctx.callbackQuery.message.message_id, null, null);
 };
 
-// EXPORT performDownload FOR WEB SERVER
 module.exports = { handleMessage, handleCallback, handleGroupMessage, handleStart, handleHelp, performDownload };
