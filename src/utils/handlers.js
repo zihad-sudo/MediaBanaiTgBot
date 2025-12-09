@@ -17,19 +17,25 @@ const getFlagEmoji = (code) => {
 
 const generateCaption = (text, platform, sourceUrl, flagEmoji) => {
     const cleanText = text ? (text.length > 900 ? text.substring(0, 897) + '...' : text) : "Media Content";
+    // Sanitize HTML
     const safeText = cleanText.replace(/</g, '&lt;').replace(/>/g, '&gt;');
     const validFlag = flagEmoji || '🇧🇩';
+    
+    // THE GREAT UI TEMPLATE
     return `🎬 <b>${platform} media</b> | <a href="${sourceUrl}">source</a> ${validFlag}\n\n<blockquote>${safeText}</blockquote>`;
 };
 
 const getTranslationButtons = () => {
-    return Markup.inlineKeyboard([[Markup.button.callback('🇺🇸 English', 'trans|en'), Markup.button.callback('🇧🇩 Bangla', 'trans|bn')]]);
+    return Markup.inlineKeyboard([[
+        Markup.button.callback('🇺🇸 English', 'trans|en'), 
+        Markup.button.callback('🇧🇩 Bangla', 'trans|bn')
+    ]]);
 };
 
 // --- START & HELP ---
 const handleStart = async (ctx) => {
     db.addUser(ctx);
-    const text = `👋 <b>Welcome to Media Banai!</b>\nI can download from Twitter, Reddit, Instagram & TikTok.\n\n<b>Features:</b>\n• Real Thumbnails (With Cookies)\n• Auto-Split Large Files\n• Translation`;
+    const text = `👋 <b>Welcome to Media Banai!</b>\nI can download from Twitter, Reddit, Instagram & TikTok.\n\n<b>Features:</b>\n• Auto-Split Large Files\n• Real Thumbnails\n• Translation`;
     const buttons = Markup.inlineKeyboard([[Markup.button.callback('📚 Help', 'help_msg'), Markup.button.callback('📊 Stats', 'stats_msg')]]);
     if (ctx.callbackQuery) await ctx.editMessageText(text, { parse_mode: 'HTML', ...buttons }).catch(()=>{});
     else await ctx.reply(text, { parse_mode: 'HTML', ...buttons });
@@ -42,12 +48,12 @@ const handleHelp = async (ctx) => {
     else await ctx.reply(text, { parse_mode: 'HTML' });
 };
 
-// --- DOWNLOADER (UPDATED: REMOVES BUTTONS) ---
-const performDownload = async (ctx, url, isAudio, qualityId, botMsgId, captionText, userMsgId) => {
+// --- DOWNLOADER (UPDATED) ---
+const performDownload = async (ctx, url, isAudio, qualityId, botMsgId, htmlCaption, userMsgId) => {
     try {
         if (userMsgId && userMsgId !== 0) { try { await ctx.telegram.deleteMessage(ctx.chat.id, userMsgId); } catch (err) {} }
         
-        // Show status in caption (keep image)
+        // Update status (Keep preview image)
         try { await ctx.telegram.editMessageCaption(ctx.chat.id, botMsgId, null, "⏳ <b>Downloading...</b>", { parse_mode: 'HTML' }); } catch (e) {}
 
         const timestamp = Date.now();
@@ -68,7 +74,7 @@ const performDownload = async (ctx, url, isAudio, qualityId, botMsgId, captionTe
         for (let i = 0; i < filesToSend.length; i++) {
             const file = filesToSend[i];
             
-            // Part 1: Replace the existing message (REMOVE BUTTONS)
+            // Part 1: Replace the Preview Image with Video
             if (i === 0) {
                 try {
                     await ctx.telegram.editMessageMedia(
@@ -78,21 +84,22 @@ const performDownload = async (ctx, url, isAudio, qualityId, botMsgId, captionTe
                         {
                             type: isAudio ? 'audio' : 'video',
                             media: { source: file },
-                            caption: captionText, // Keep original caption
+                            caption: htmlCaption, // RESTORE GREAT UI CAPTION
                             parse_mode: 'HTML'
-                        }
-                        // ✅ No reply_markup passed here = Buttons Removed!
+                        },
+                        // ✅ Only keep Translation Buttons (Remove Download Buttons)
+                        { ...getTranslationButtons().reply_markup } 
                     );
                 } catch (editError) {
-                    // Fallback if edit fails (e.g. type change error)
+                    // Fallback if edit fails
                     await ctx.telegram.deleteMessage(ctx.chat.id, botMsgId).catch(()=>{});
-                    if (isAudio) await ctx.replyWithAudio({ source: file }, { caption: captionText, parse_mode: 'HTML' });
-                    else await ctx.replyWithVideo({ source: file }, { caption: captionText, parse_mode: 'HTML' });
+                    if (isAudio) await ctx.replyWithAudio({ source: file }, { caption: htmlCaption, parse_mode: 'HTML', ...getTranslationButtons() });
+                    else await ctx.replyWithVideo({ source: file }, { caption: htmlCaption, parse_mode: 'HTML', ...getTranslationButtons() });
                 }
             } 
             // Part 2+: Send as new messages
             else {
-                let partCaption = captionText + `\n\n🧩 <b>Part ${i + 1}</b>`;
+                let partCaption = htmlCaption + `\n\n🧩 <b>Part ${i + 1}</b>`;
                 if (isAudio) await ctx.replyWithAudio({ source: file }, { caption: partCaption, parse_mode: 'HTML' });
                 else await ctx.replyWithVideo({ source: file }, { caption: partCaption, parse_mode: 'HTML' });
             }
@@ -140,7 +147,7 @@ const handleMessage = async (ctx) => {
         if (fullUrl.includes('x.com') || fullUrl.includes('twitter.com')) {
             platformName = 'Twitter';
             
-            // ✅ PRIORITY 1: Try Cookies/YT-DLP First (Best for Thumbnails)
+            // ✅ PRIORITY 1: YT-DLP (Get Real Thumbnail)
             try {
                 const info = await downloader.getInfo(fullUrl);
                 media = {
@@ -153,8 +160,7 @@ const handleMessage = async (ctx) => {
                     formats: info.formats || []
                 };
             } catch (e) {
-                console.log("Cookie fetch failed, trying scraper...");
-                // Fallback to Scraper (Might have bad thumbnail)
+                // Fallback to Scraper (Low quality thumbnail)
                 media = await twitterService.extract(fullUrl);
             }
         } 
@@ -168,7 +174,7 @@ const handleMessage = async (ctx) => {
             try {
                 const info = await downloader.getInfo(fullUrl);
                 media = { 
-                    title: info.title || 'Video', 
+                    title: info.title || 'Social Video', 
                     author: info.uploader || 'User', 
                     source: fullUrl, 
                     type: 'video', 
@@ -199,19 +205,22 @@ const handleMessage = async (ctx) => {
         else if (media.type === 'gallery') buttons.push([Markup.button.callback(`📥 Download Album`, `alb|all`)]);
         else if (media.type === 'image') buttons.push([Markup.button.callback(`🖼 Download Image`, `img|single`)]);
 
+        // Add Translation Buttons to the menu as well
+        const menuMarkup = Markup.inlineKeyboard([...buttons, ...getTranslationButtons().reply_markup.inline_keyboard]);
+
         // ✅ SEND PHOTO (Forces Real Thumbnail)
         if (media.thumbnail) {
             await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id).catch(()=>{});
             await ctx.replyWithPhoto(media.thumbnail, { 
                 caption: prettyCaption, 
                 parse_mode: 'HTML', 
-                ...Markup.inlineKeyboard(buttons) 
+                ...menuMarkup
             });
         } else {
             await ctx.telegram.editMessageText(
                 ctx.chat.id, msg.message_id, null, 
                 `${prettyCaption}`, 
-                { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) }
+                { parse_mode: 'HTML', ...menuMarkup }
             );
         }
 
@@ -252,26 +261,46 @@ const handleCallback = async (ctx) => {
     if (action === 'start_msg') return handleStart(ctx);
     if (action === 'stats_msg') return ctx.answerCbQuery("Use /stats", { show_alert: true });
     
+    // ✅ RECONSTRUCT CAPTION LOGIC
+    // We need the HTML formatting to survive into the final video message
+    const captionText = ctx.callbackQuery.message.caption || "";
     const entities = ctx.callbackQuery.message.caption_entities || ctx.callbackQuery.message.entities;
-    const url = entities?.find(e => e.type === 'text_link')?.url;
+    const url = entities?.find(e => e.type === 'text_link')?.url || 
+                entities?.find(e => e.type === 'url')?.url || // Fallback if no text_link
+                "http://example.com";
+
+    // Re-generate HTML from raw text to ensure bold/links are correct
+    // We assume the caption follows our format: Header | Source Flag \n\n Body
+    let platform = 'Social';
+    if (captionText.toLowerCase().includes('twitter')) platform = 'Twitter';
+    if (captionText.toLowerCase().includes('reddit')) platform = 'Reddit';
+    
+    // Extract Body: Everything after the first double newline
+    const bodyParts = captionText.split('\n');
+    let bodyText = bodyParts.length > 2 ? bodyParts.slice(2).join('\n') : captionText;
+    
+    // Identify Flag
+    let flag = '🇧🇩';
+    const firstLine = bodyParts[0] || "";
+    if (firstLine.includes('🇺🇸')) flag = '🇺🇸'; // Simple check
+
+    // Regenerate proper HTML
+    const htmlCaption = generateCaption(bodyText, platform, url, flag);
 
     if (action === 'trans') {
-        const msg = ctx.callbackQuery.message.caption;
-        if (!msg) return ctx.answerCbQuery("No text");
+        if (!captionText) return ctx.answerCbQuery("No text");
         await ctx.answerCbQuery("Translating...");
         try {
-            const res = await translate(msg.split('\n').slice(2).join('\n') || msg, { to: id, autoCorrect: true });
-            const link = url || "http"; 
-            await ctx.editMessageCaption(generateCaption(res.text, 'Social', link, '🇧🇩'), { parse_mode: 'HTML', ...getTranslationButtons() });
+            const res = await translate(bodyText, { to: id, autoCorrect: true });
+            await ctx.editMessageCaption(generateCaption(res.text, platform, url, '🇧🇩'), { parse_mode: 'HTML', ...getTranslationButtons() });
         } catch(e) { await ctx.answerCbQuery("Error"); }
         return;
     }
 
-    if (!url) return ctx.answerCbQuery("Expired. Send link again.");
+    if (!url || url === "http://example.com") return ctx.answerCbQuery("Link not found.");
 
     if (action === 'img') { await ctx.answerCbQuery("Sending..."); await ctx.replyWithPhoto(url); await ctx.deleteMessage(); }
-    else await performDownload(ctx, url, action === 'aud', id, ctx.callbackQuery.message.message_id, ctx.callbackQuery.message.caption, null);
+    else await performDownload(ctx, url, action === 'aud', id, ctx.callbackQuery.message.message_id, htmlCaption, null);
 };
 
-// EXPORT performDownload FOR WEB SERVER
 module.exports = { handleMessage, handleCallback, handleGroupMessage, handleStart, handleHelp, performDownload };
