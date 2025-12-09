@@ -18,11 +18,12 @@ const UserSchema = new mongoose.Schema({
         webhookTarget: { type: String, default: '' } 
     },
 
-    // ✅ NEW: Reddit RSS Config
+    // ✅ REDDIT CONFIG (Updated)
     redditConfig: {
-        rssUrl: { type: String, default: '' },     // Your private saved feed URL
-        lastPostId: { type: String, default: '' }, // Last post we processed
-        isActive: { type: Boolean, default: false }
+        rssUrl: { type: String, default: '' },
+        lastPostId: { type: String, default: '' },
+        isActive: { type: Boolean, default: false }, // Switch
+        interval: { type: Number, default: 2 }       // Custom Time (Minutes)
     }
 });
 
@@ -69,12 +70,11 @@ const getAdminConfig = async (adminId) => {
 
 // Reddit Config
 const updateRedditConfig = async (adminId, rssUrl) => {
-    // Reset last ID to trigger first-run sync
     return await User.findOneAndUpdate(
         { id: String(adminId) },
         { 
             'redditConfig.rssUrl': rssUrl,
-            'redditConfig.isActive': true,
+            'redditConfig.isActive': true, // Auto-start on setup
             'redditConfig.lastPostId': '' 
         },
         { new: true }
@@ -85,8 +85,15 @@ const updateRedditLastId = async (adminId, postId) => {
     await User.updateOne({ id: String(adminId) }, { 'redditConfig.lastPostId': postId });
 };
 
+// ✅ NEW: Toggle & Interval
 const toggleRedditMode = async (adminId, isActive) => {
     await User.updateOne({ id: String(adminId) }, { 'redditConfig.isActive': isActive });
+};
+
+const setRedditInterval = async (adminId, minutes) => {
+    // Minimum 1 minute to prevent crashing
+    const safeMinutes = minutes < 1 ? 1 : minutes;
+    await User.updateOne({ id: String(adminId) }, { 'redditConfig.interval': safeMinutes });
 };
 
 // Twitter Config
@@ -132,5 +139,5 @@ module.exports = {
     setNickname, getNickname, deleteNickname,
     getAdminConfig, setWebhookTarget,
     updateApiConfig, updateLastId, toggleMode,
-    updateRedditConfig, updateRedditLastId, toggleRedditMode // ✅ Exported
+    updateRedditConfig, updateRedditLastId, toggleRedditMode, setRedditInterval 
 };
