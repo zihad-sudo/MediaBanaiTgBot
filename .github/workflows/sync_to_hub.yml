@@ -1,7 +1,8 @@
 name: Sync to Hugging Face hub
 on:
   push:
-    branches: [main]
+    # 1. TRIGGER: Listen to your specific branch
+    branches: [Stable-higging-v1]
   workflow_dispatch:
 
 jobs:
@@ -11,7 +12,12 @@ jobs:
       - uses: actions/checkout@v3
         with:
           fetch-depth: 0
+          # 2. CHECKOUT: Make sure we grab your branch
+          ref: Stable-higging-v1
+          
       - name: Push to hub
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: git push https://zihad69:$HF_TOKEN@huggingface.co/spaces/zihad69/WebBanaiBot main
+        # 3. PUSH: Send 'Stable-higging-v1' content to the 'main' branch on Hugging Face
+        # (Hugging Face Spaces always run from their 'main', so we map your branch to their main)
+        run: git push https://zihad69:$HF_TOKEN@huggingface.co/spaces/zihad69/WebBanaiBot Stable-higging-v1:main --force
