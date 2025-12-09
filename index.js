@@ -10,7 +10,8 @@ const {
     handleCallback, 
     handleGroupMessage, 
     handleStart, 
-    handleHelp 
+    handleHelp,
+			handleConfig
 } = require('./src/utils/handlers');
 
 const { handleStats, handleBroadcast } = require('./src/utils/admin'); 
@@ -29,6 +30,7 @@ const bot = new Telegraf(config.BOT_TOKEN);
 // --- COMMANDS ---
 bot.start(handleStart);
 bot.help(handleHelp);
+bot.command('set_destination', handleConfig);
 
 // Admin Commands
 bot.command('stats', handleStats);
