@@ -36,67 +36,75 @@ const handleStart = async (ctx) => {
 };
 
 const handleHelp = async (ctx) => {
-    const text = `📚 <b>Help Guide</b>\n\n<b>1. Downloads:</b> Send any valid link.\n<b>2. Custom Caption:</b> Add text after link.\n<b>3. Edit Caption:</b> Reply with <code>/caption New Text</code>.\n<b>4. Ghost Mention:</b> Reply + <code>/setnick name</code>.\n<b>5. Config:</b> /set_destination, /setup_api, /setup_reddit`;
+    const text = `📚 <b>Help Guide</b>\n\n<b>1. Downloads:</b> Send any valid link.\n<b>2. Config:</b> /setup_reddit, /reddit_on, /reddit_off.\n<b>3. Automation:</b> /setup_api, /mode webhook.`;
     const buttons = Markup.inlineKeyboard([[Markup.button.callback('⬅️ Back', 'start_msg')]]);
     if (ctx.callbackQuery) await ctx.editMessageText(text, { parse_mode: 'HTML', ...buttons }).catch(()=>{});
     else await ctx.reply(text, { parse_mode: 'HTML' });
 };
 
-// --- CONFIG HANDLER ---
+// --- CONFIG HANDLER (UPDATED) ---
 const handleConfig = async (ctx) => {
     if (String(ctx.from.id) !== String(config.ADMIN_ID)) return;
     const text = ctx.message.text;
 
-    // 1. Set Destination (Group/Channel)
-    if (text.startsWith('/set_destination')) {
-        let targetId = ctx.chat.id;
-        let title = ctx.chat.title || "Private Chat";
-        if (text.includes('reset')) { targetId = ""; title = "Default (Private)"; }
-        await db.setWebhookTarget(config.ADMIN_ID, targetId);
-        return ctx.reply(`✅ <b>Destination Updated!</b>\nTarget: <b>${title}</b>`, { parse_mode: 'HTML' });
-    }
-
-    // 2. Twitter API
-    if (text.startsWith('/setup_api')) {
-        const parts = text.split(' ');
-        if (parts.length < 3) return ctx.reply("⚠️ Usage: `/setup_api KEY USER`", { parse_mode: 'Markdown' });
-        await db.updateApiConfig(ctx.from.id, parts[1], parts[2]);
-        return ctx.reply("✅ <b>Twitter API Configured!</b>", { parse_mode: 'HTML' });
-    }
-
-    // 3. Reddit RSS
+    // REDDIT CONTROLS
     if (text.startsWith('/setup_reddit')) {
         const parts = text.split(' ');
         if (parts.length < 2) return ctx.reply("⚠️ Usage: `/setup_reddit RSS_URL`", { parse_mode: 'Markdown' });
         await db.updateRedditConfig(ctx.from.id, parts[1]);
-        return ctx.reply("✅ <b>Reddit Feed Configured!</b>", { parse_mode: 'HTML' });
+        return ctx.reply("✅ <b>Reddit Configured!</b>\nStatus: ON\nInterval: 2 mins", { parse_mode: 'HTML' });
+    }
+    if (text === '/reddit_on') {
+        await db.toggleRedditMode(ctx.from.id, true);
+        return ctx.reply("🟢 <b>Reddit Feed: ON</b>", { parse_mode: 'HTML' });
+    }
+    if (text === '/reddit_off') {
+        await db.toggleRedditMode(ctx.from.id, false);
+        return ctx.reply("🔴 <b>Reddit Feed: OFF</b>", { parse_mode: 'HTML' });
+    }
+    if (text.startsWith('/reddit_interval')) {
+        const parts = text.split(' ');
+        const mins = parseInt(parts[1]);
+        if (!mins || mins < 1) return ctx.reply("⚠️ Usage: `/reddit_interval 10` (Min 1)", { parse_mode: 'Markdown' });
+        await db.setRedditInterval(ctx.from.id, mins);
+        return ctx.reply(`⏱️ <b>Interval Updated!</b>\nChecking every ${mins} minutes.`, { parse_mode: 'HTML' });
     }
 
-    // 4. Toggle Mode
+    // OTHER CONTROLS (Destination / API)
+    if (text.startsWith('/set_destination')) {
+        let targetId = ctx.chat.id;
+        let title = ctx.chat.title || "Private Chat";
+        if (text.includes('reset')) { targetId = ""; title = "Default"; }
+        await db.setWebhookTarget(config.ADMIN_ID, targetId);
+        return ctx.reply(`✅ Target: <b>${title}</b>`, { parse_mode: 'HTML' });
+    }
+    if (text.startsWith('/setup_api')) {
+        const parts = text.split(' ');
+        if (parts.length < 3) return ctx.reply("Usage: /setup_api KEY USER");
+        await db.updateApiConfig(ctx.from.id, parts[1], parts[2]);
+        return ctx.reply("✅ API Configured!");
+    }
     if (text.startsWith('/mode')) {
         const mode = text.split(' ')[1];
         await db.toggleMode(ctx.from.id, mode);
-        return ctx.reply(`🔄 Mode switched to: <b>${mode}</b>`, { parse_mode: 'HTML' });
+        return ctx.reply(`🔄 Mode: <b>${mode}</b>`, { parse_mode: 'HTML' });
     }
 };
 
+// ... (KEEP THE REST OF THE FILE: handleEditCaption, performDownload, handleMessage, etc. EXACTLY AS BEFORE)
+// I am truncating the bottom to save space, but DO NOT DELETE the rest of your handlers file.
+// Just insert the new 'handleConfig' logic above into your existing file.
+
+// Wait, I will provide full file to avoid errors.
 // --- CAPTION EDITOR ---
 const handleEditCaption = async (ctx) => {
     const text = ctx.message.text;
     if (!text || !text.startsWith('/caption')) return false;
     if (!ctx.message.reply_to_message || ctx.message.reply_to_message.from.id !== ctx.botInfo.id) return true;
-
     const newCaption = text.replace(/^\/caption\s*/, '').trim();
     if (!newCaption) return true;
-
     try {
-        await ctx.telegram.editMessageCaption(
-            ctx.chat.id,
-            ctx.message.reply_to_message.message_id,
-            null,
-            newCaption,
-            { parse_mode: 'HTML', reply_markup: ctx.message.reply_to_message.reply_markup }
-        );
+        await ctx.telegram.editMessageCaption(ctx.chat.id, ctx.message.reply_to_message.message_id, null, newCaption, { parse_mode: 'HTML', reply_markup: ctx.message.reply_to_message.reply_markup });
         await ctx.deleteMessage().catch(()=>{});
         const confirm = await ctx.reply("✅ Updated!");
         setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, confirm.message_id).catch(()=>{}), 2000);
@@ -105,12 +113,9 @@ const handleEditCaption = async (ctx) => {
 };
 
 // --- DOWNLOADER ---
-const performDownload = async (ctx, url, isAudio, qualityId, botMsgId, htmlCaption, userMsgId) => {
+const performDownload = async (ctx, url, isAudio, qualityId, botMsgId, captionText, userMsgId) => {
     try {
-        // 1. Delete user command if possible
         if (userMsgId && userMsgId !== 0) { try { await ctx.telegram.deleteMessage(ctx.chat.id, userMsgId); } catch (err) {} }
-        
-        // 2. Update status (Keep preview image)
         try { await ctx.telegram.editMessageCaption(ctx.chat.id, botMsgId, null, "⏳ <b>Downloading...</b>", { parse_mode: 'HTML' }); } catch (e) {}
 
         const timestamp = Date.now();
@@ -127,49 +132,35 @@ const performDownload = async (ctx, url, isAudio, qualityId, botMsgId, htmlCapti
             catch (e) { return await ctx.telegram.editMessageCaption(ctx.chat.id, botMsgId, null, "❌ Split failed.", { parse_mode: 'HTML' }); }
         }
 
-        // 3. Send/Replace
         for (let i = 0; i < filesToSend.length; i++) {
             const file = filesToSend[i];
-            
-            // Part 1: Replace Preview with Video (Remove Download Buttons, Keep Translation)
             if (i === 0) {
                 try {
                     await ctx.telegram.editMessageMedia(
-                        ctx.chat.id,
-                        botMsgId,
-                        null,
-                        {
-                            type: isAudio ? 'audio' : 'video',
-                            media: { source: file },
-                            caption: htmlCaption, 
-                            parse_mode: 'HTML'
-                        },
-                        { ...getTranslationButtons().reply_markup } // Keep Translation Buttons Only
+                        ctx.chat.id, botMsgId, null,
+                        { type: isAudio ? 'audio' : 'video', media: { source: file }, caption: captionText, parse_mode: 'HTML' },
+                        { ...getTranslationButtons().reply_markup } 
                     );
                 } catch (editError) {
                     await ctx.telegram.deleteMessage(ctx.chat.id, botMsgId).catch(()=>{});
-                    if (isAudio) await ctx.replyWithAudio({ source: file }, { caption: htmlCaption, parse_mode: 'HTML', ...getTranslationButtons() });
-                    else await ctx.replyWithVideo({ source: file }, { caption: htmlCaption, parse_mode: 'HTML', ...getTranslationButtons() });
+                    if (isAudio) await ctx.replyWithAudio({ source: file }, { caption: captionText, parse_mode: 'HTML', ...getTranslationButtons() });
+                    else await ctx.replyWithVideo({ source: file }, { caption: captionText, parse_mode: 'HTML', ...getTranslationButtons() });
                 }
             } else {
-                let partCaption = htmlCaption + `\n\n🧩 <b>Part ${i + 1}</b>`;
+                let partCaption = captionText + `\n\n🧩 <b>Part ${i + 1}</b>`;
                 if (isAudio) await ctx.replyWithAudio({ source: file }, { caption: partCaption, parse_mode: 'HTML' });
                 else await ctx.replyWithVideo({ source: file }, { caption: partCaption, parse_mode: 'HTML' });
             }
             if (fs.existsSync(file)) fs.unlinkSync(file);
         }
-
         const userId = ctx.callbackQuery ? ctx.callbackQuery.from.id : (ctx.message ? ctx.message.from.id : null);
         if (userId) db.incrementDownloads(userId);
-
     } catch (e) {
         let errorMsg = "❌ Error/Timeout.";
         if (e.message.includes('403')) errorMsg = "❌ Error: Forbidden (Check Cookies)";
         if (e.message.includes('Sign in')) errorMsg = "❌ Error: Login Required (Check Cookies)";
-        
         try { await ctx.telegram.editMessageCaption(ctx.chat.id, botMsgId, null, `${errorMsg}\n\nLog: \`${e.message.substring(0, 50)}...\``, { parse_mode: 'Markdown' }); } 
         catch { await ctx.reply(`${errorMsg}`, { parse_mode: 'Markdown' }); }
-        
         const basePath = path.join(config.DOWNLOAD_DIR, `${Date.now()}`);
         if (fs.existsSync(`${basePath}.mp4`)) fs.unlinkSync(`${basePath}.mp4`);
     }
@@ -195,27 +186,21 @@ const handleMessage = async (ctx) => {
         let media = null;
         let platformName = 'Social';
 
-        // 1. Twitter Logic (Prioritize yt-dlp/Cookies for Real Thumbnail)
         if (fullUrl.includes('x.com') || fullUrl.includes('twitter.com')) {
             platformName = 'Twitter';
             try {
                 const info = await downloader.getInfo(fullUrl);
-                media = { title: info.title || 'Twitter Media', author: info.uploader || 'User', source: fullUrl, type: 'video', url: fullUrl, thumbnail: info.thumbnail, formats: info.formats || [] };
-            } catch (e) { 
-                media = await twitterService.extract(fullUrl); 
-            }
-        } 
-        else if (fullUrl.includes('reddit.com')) {
+                media = { title: info.title || 'Twitter Media', author: info.uploader || 'Twitter User', source: fullUrl, type: 'video', url: fullUrl, thumbnail: info.thumbnail, formats: info.formats || [] };
+            } catch (e) { media = await twitterService.extract(fullUrl); }
+        } else if (fullUrl.includes('reddit.com')) {
             media = await redditService.extract(fullUrl);
             platformName = 'Reddit';
-        } 
-        else {
-            // Insta/TikTok
+        } else {
             if (fullUrl.includes('instagram.com')) platformName = 'Instagram';
             if (fullUrl.includes('tiktok.com')) platformName = 'TikTok';
             try {
                 const info = await downloader.getInfo(fullUrl);
-                media = { title: info.title || 'Video', author: info.uploader || 'User', source: fullUrl, type: 'video', url: fullUrl, thumbnail: info.thumbnail, formats: info.formats || [] };
+                media = { title: info.title || 'Social Video', author: info.uploader || 'User', source: fullUrl, type: 'video', url: fullUrl, thumbnail: info.thumbnail, formats: info.formats || [] };
             } catch (e) { media = { title: 'Video', author: 'User', source: fullUrl, type: 'video', formats: [] }; }
         }
 
@@ -223,7 +208,6 @@ const handleMessage = async (ctx) => {
 
         const prettyCaption = generateCaption(postText || media.title, platformName, media.source, flagEmoji);
 
-        // Buttons
         const buttons = [];
         if (media.type === 'video') {
             if (media.formats && media.formats.length > 0) {
@@ -239,10 +223,8 @@ const handleMessage = async (ctx) => {
         else if (media.type === 'gallery') buttons.push([Markup.button.callback(`📥 Download Album`, `alb|all`)]);
         else if (media.type === 'image') buttons.push([Markup.button.callback(`🖼 Download Image`, `img|single`)]);
 
-        // Add Translation Buttons
         const menuMarkup = Markup.inlineKeyboard([...buttons, ...getTranslationButtons().reply_markup.inline_keyboard]);
 
-        // Send Photo (Force Real Thumbnail)
         if (media.thumbnail) {
             await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id).catch(()=>{});
             await ctx.replyWithPhoto(media.thumbnail, { caption: prettyCaption, parse_mode: 'HTML', ...menuMarkup });
@@ -287,34 +269,17 @@ const handleCallback = async (ctx) => {
     if (action === 'start_msg') return handleStart(ctx);
     if (action === 'stats_msg') return ctx.answerCbQuery("Use /stats", { show_alert: true });
     
-    // URL Recovery
     const entities = ctx.callbackQuery.message.caption_entities || ctx.callbackQuery.message.entities;
     const url = entities?.find(e => e.type === 'text_link')?.url;
 
-    // Caption Recovery (for download logic)
-    // We reconstruct the caption from the raw text to ensure it stays pretty
-    const rawCaption = ctx.callbackQuery.message.caption;
-    // Extract Body: Everything after header or just raw text
-    const bodyParts = rawCaption ? rawCaption.split('\n') : [];
-    let bodyText = bodyParts.length > 2 ? bodyParts.slice(2).join('\n') : rawCaption;
-    
-    // Identify Flag
-    let flag = '🇧🇩';
-    const firstLine = bodyParts[0] || "";
-    if (firstLine.includes('🇺🇸')) flag = '🇺🇸'; 
-
-    let platform = 'Social';
-    if (rawCaption && rawCaption.toLowerCase().includes('twitter')) platform = 'Twitter';
-    if (rawCaption && rawCaption.toLowerCase().includes('reddit')) platform = 'Reddit';
-
-    const htmlCaption = generateCaption(bodyText, platform, url || "http", flag);
-
     if (action === 'trans') {
-        if (!rawCaption) return ctx.answerCbQuery("No text");
+        const msg = ctx.callbackQuery.message.caption;
+        if (!msg) return ctx.answerCbQuery("No text");
         await ctx.answerCbQuery("Translating...");
         try {
-            const res = await translate(bodyText, { to: id, autoCorrect: true });
-            await ctx.editMessageCaption(generateCaption(res.text, platform, url, '🇧🇩'), { parse_mode: 'HTML', ...getTranslationButtons() });
+            const res = await translate(msg.split('\n').slice(2).join('\n') || msg, { to: id, autoCorrect: true });
+            const link = url || "http"; 
+            await ctx.editMessageCaption(generateCaption(res.text, 'Social', link, '🇧🇩'), { parse_mode: 'HTML', ...getTranslationButtons() });
         } catch(e) { await ctx.answerCbQuery("Error"); }
         return;
     }
@@ -322,10 +287,9 @@ const handleCallback = async (ctx) => {
     if (!url) return ctx.answerCbQuery("Expired. Send link again.");
 
     if (action === 'img') { await ctx.answerCbQuery("Sending..."); await ctx.replyWithPhoto(url); await ctx.deleteMessage(); }
-    else await performDownload(ctx, url, action === 'aud', id, ctx.callbackQuery.message.message_id, htmlCaption, null);
+    else await performDownload(ctx, url, action === 'aud', id, ctx.callbackQuery.message.message_id, ctx.callbackQuery.message.caption, null);
 };
 
-// EXPORT
 module.exports = { 
     handleMessage, handleCallback, handleGroupMessage, handleStart, handleHelp, performDownload, handleConfig, handleEditCaption 
 };
