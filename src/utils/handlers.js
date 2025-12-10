@@ -141,7 +141,7 @@ const performDownload = async (ctx, url, isAudio, qualityId, botMsgId, htmlCapti
                             caption: htmlCaption, 
                             parse_mode: 'HTML'
                         },
-                        { ...getTranslationButtons().reply_markup } 
+                        { ...getTranslationButtons().reply_markup } // REMOVE DOWNLOAD BUTTONS, KEEP TRANSLATE
                     );
                 } catch (editError) {
                     await ctx.telegram.deleteMessage(ctx.chat.id, botMsgId).catch(()=>{});
@@ -192,40 +192,30 @@ const handleMessage = async (ctx) => {
         let media = null;
         let platformName = 'Social';
 
-        // ✅ UPDATED LOGIC: USE YT-DLP FIRST FOR REDDIT TOO
-        if (fullUrl.includes('x.com') || fullUrl.includes('twitter.com') || fullUrl.includes('reddit.com')) {
-            platformName = fullUrl.includes('reddit') ? 'Reddit' : 'Twitter';
+        // ✅ 1. TWITTER LOGIC (Restored Quality System)
+        if (fullUrl.includes('x.com') || fullUrl.includes('twitter.com')) {
+            platformName = 'Twitter';
             try {
-                // Try Cookie Fetch First (Gets Real Thumbnail)
+                // Try yt-dlp first (Gets Thumbnail AND Formats)
                 const info = await downloader.getInfo(fullUrl);
-                
-                // If it's a Reddit Gallery (playlist), info._type will be 'playlist'
-                if (info._type === 'playlist' && info.entries) {
-                    throw new Error("Gallery detected, fallback to scraper");
-                }
-
-                media = { 
-                    title: info.title || `${platformName} Media`, 
-                    author: info.uploader || 'User', 
-                    source: fullUrl, 
-                    type: 'video', 
-                    url: fullUrl, 
-                    thumbnail: info.thumbnail, 
-                    formats: info.formats || [] 
+                media = {
+                    title: info.title || 'Twitter Media',
+                    author: info.uploader || 'Twitter User',
+                    source: fullUrl,
+                    type: 'video',
+                    url: fullUrl,
+                    thumbnail: info.thumbnail,
+                    formats: info.formats || [] // <--- CRITICAL: Pass formats for buttons
                 };
-                
-                // If image (no formats)
-                if (!info.formats && (info.ext === 'jpg' || info.ext === 'png')) {
-                    media.type = 'image';
-                    media.url = info.url;
-                }
-
             } catch (e) {
-                // Fallback to Scraper if yt-dlp fails (e.g. Gallery)
-                console.log(`${platformName} cookie fetch failed, using scraper...`);
-                if (platformName === 'Twitter') media = await twitterService.extract(fullUrl);
-                else media = await redditService.extract(fullUrl);
+                // Fallback to Scraper (No quality buttons, but works)
+                console.log("Cookie fetch failed, using scraper...");
+                media = await twitterService.extract(fullUrl);
             }
+        } 
+        else if (fullUrl.includes('reddit.com')) {
+            media = await redditService.extract(fullUrl);
+            platformName = 'Reddit';
         } 
         else {
             // Instagram / TikTok
@@ -241,24 +231,34 @@ const handleMessage = async (ctx) => {
 
         const prettyCaption = generateCaption(postText || media.title, platformName, media.source, flagEmoji);
 
-        // Buttons
+        // ✅ 2. GENERATE QUALITY BUTTONS (Restored)
         const buttons = [];
         if (media.type === 'video') {
+            // Filter and sort formats (Resolution Options)
             if (media.formats && media.formats.length > 0) {
-                const formats = media.formats.filter(f => f.ext === 'mp4' && f.height).sort((a,b) => b.height - a.height);
+                const formats = media.formats
+                    .filter(f => f.ext === 'mp4' && f.height) // Only MP4s with height
+                    .sort((a,b) => b.height - a.height);      // Highest first
+                
                 const seen = new Set();
-                formats.slice(0, 5).forEach(f => {
-                    if(!seen.has(f.height)) { seen.add(f.height); buttons.push([Markup.button.callback(`📹 ${f.height}p`, `vid|${f.format_id}`)]); }
+                formats.slice(0, 6).forEach(f => { // Show top 6 options
+                    if(!seen.has(f.height)) { 
+                        seen.add(f.height); 
+                        buttons.push([Markup.button.callback(`📹 ${f.height}p`, `vid|${f.format_id}`)]); 
+                    }
                 });
             }
+            // Always show "Best" and "Audio"
             buttons.push([Markup.button.callback("📹 Download Video (Best)", "vid|best")]);
             buttons.push([Markup.button.callback("🎵 Audio Only", "aud|best")]);
         }
         else if (media.type === 'gallery') buttons.push([Markup.button.callback(`📥 Download Album`, `alb|all`)]);
         else if (media.type === 'image') buttons.push([Markup.button.callback(`🖼 Download Image`, `img|single`)]);
 
+        // Merge with Translation Buttons
         const menuMarkup = Markup.inlineKeyboard([...buttons, ...getTranslationButtons().reply_markup.inline_keyboard]);
 
+        // ✅ 3. SEND WITH THUMBNAIL
         if (media.thumbnail) {
             await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id).catch(()=>{});
             await ctx.replyWithPhoto(media.thumbnail, { caption: prettyCaption, parse_mode: 'HTML', ...menuMarkup });
@@ -306,7 +306,7 @@ const handleCallback = async (ctx) => {
     const entities = ctx.callbackQuery.message.caption_entities || ctx.callbackQuery.message.entities;
     const url = entities?.find(e => e.type === 'text_link')?.url;
 
-    // RECONSTRUCT CAPTION (Keep formatting safe)
+    // RECONSTRUCT CAPTION
     const rawCaption = ctx.callbackQuery.message.caption;
     const bodyParts = rawCaption ? rawCaption.split('\n') : [];
     let bodyText = bodyParts.length > 2 ? bodyParts.slice(2).join('\n') : rawCaption;
