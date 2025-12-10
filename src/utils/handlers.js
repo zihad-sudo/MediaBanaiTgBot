@@ -26,70 +26,20 @@ const getTranslationButtons = () => {
     return Markup.inlineKeyboard([[Markup.button.callback('🇺🇸 English', 'trans|en'), Markup.button.callback('🇧🇩 Bangla', 'trans|bn')]]);
 };
 
-// --- START HANDLER ---
+// --- START & HELP ---
 const handleStart = async (ctx) => {
     db.addUser(ctx);
-    const text = `👋 <b>Welcome to Media Banai!</b>\n\nI am your professional media assistant. I support:\n• 🐦 <b>Twitter / X</b>\n• 👽 <b>Reddit</b>\n• 📸 <b>Instagram</b>\n• 🎵 <b>TikTok</b>\n\n<i>Click Help for a full tutorial!</i>`;
-    const buttons = Markup.inlineKeyboard([
-        [Markup.button.callback('📚 Full Guide / Help', 'help_msg')],
-        [Markup.button.callback('📊 My Stats', 'stats_msg')]
-    ]);
+    const text = `👋 <b>Welcome to Media Banai!</b>\nI can download from Twitter, Reddit, Instagram & TikTok.\n\n<b>Features:</b>\n• Auto-Split Large Files\n• Real Thumbnails\n• Translation`;
+    const buttons = Markup.inlineKeyboard([[Markup.button.callback('📚 Help', 'help_msg'), Markup.button.callback('📊 Stats', 'stats_msg')]]);
     if (ctx.callbackQuery) await ctx.editMessageText(text, { parse_mode: 'HTML', ...buttons }).catch(()=>{});
     else await ctx.reply(text, { parse_mode: 'HTML', ...buttons });
 };
 
-// --- ✅ PROFESSIONAL HELP GUIDE ---
 const handleHelp = async (ctx) => {
-    const text = `
-📚 <b>Media Banai User Guide</b>
-
-<b>1. 📥 Downloading Media</b>
-Simply send any link from supported platforms.
-• I will fetch the <b>Real Thumbnail</b> and show quality options.
-• <b>Large Files (>50MB)</b> are automatically split into parts.
-
-<b>2. ✍️ Customizing Posts</b>
-You can style your upload before sending the link:
-• <b>Custom Caption:</b> Add text <i>after</i> the link.
-  <code>https://x.com/post Wow amazing!</code>
-• <b>Country Flag:</b> Add code (us, bd, in) <i>before</i> link.
-  <code>us https://x.com/post</code>
-
-<b>3. ✏️ Edit After Sending</b>
-Made a mistake? Reply to any video I sent with:
-• <code>/caption New Title Here</code>
-(I will update the text immediately!)
-
-<b>4. 👻 Ghost Mentions (Groups)</b>
-Tag friends without cluttering the chat!
-• <b>Setup:</b> Reply to them: <code>/setnick bro</code>
-• <b>Use:</b> Type <code>bro</code> in chat.
-• <b>Result:</b> I delete your text & tag them silently.
-
-<b>5. 👽 Reddit Auto-Saver</b>
-I can download posts you 'Save' on Reddit automatically.
-• <b>Setup:</b> <code>/setup_reddit [RSS_LINK]</code>
-• <b>Turn On/Off:</b> <code>/reddit_on</code> | <code>/reddit_off</code>
-• <b>Speed:</b> <code>/reddit_interval 10</code> (Minutes)
-
-<b>6. ⚡ Automation (Webhooks)</b>
-Connect IFTTT or Phone Shortcuts to download without opening Telegram!
-• <b>Setup:</b> <code>/setup_api [KEY] [USER]</code> (For TwitterAPI)
-• <b>Mode:</b> <code>/mode webhook</code> (Free) or <code>/mode api</code> (Paid)
-• <b>Destination:</b> <code>/set_destination</code> (Send to Group)
-
-<i>Tap a button below to close this guide.</i>
-    `.trim();
-
-    const buttons = Markup.inlineKeyboard([
-        [Markup.button.callback('🔙 Back to Menu', 'start_msg')]
-    ]);
-
-    if (ctx.callbackQuery) {
-        await ctx.editMessageText(text, { parse_mode: 'HTML', ...buttons, disable_web_page_preview: true }).catch(()=>{});
-    } else {
-        await ctx.reply(text, { parse_mode: 'HTML', ...buttons, disable_web_page_preview: true });
-    }
+    const text = `📚 <b>Help Guide</b>\n\n<b>1. Downloads:</b> Send any valid link.\n<b>2. Custom Caption:</b> Add text after link.\n<b>3. Edit Caption:</b> Reply with <code>/caption New Text</code>.\n<b>4. Ghost Mention:</b> Reply + <code>/setnick name</code>.\n<b>5. Config:</b> /set_destination, /setup_api, /setup_reddit`;
+    const buttons = Markup.inlineKeyboard([[Markup.button.callback('⬅️ Back', 'start_msg')]]);
+    if (ctx.callbackQuery) await ctx.editMessageText(text, { parse_mode: 'HTML', ...buttons }).catch(()=>{});
+    else await ctx.reply(text, { parse_mode: 'HTML' });
 };
 
 // --- CONFIG HANDLER ---
@@ -97,30 +47,6 @@ const handleConfig = async (ctx) => {
     if (String(ctx.from.id) !== String(config.ADMIN_ID)) return;
     const text = ctx.message.text;
 
-    // Reddit Config
-    if (text.startsWith('/setup_reddit')) {
-        const parts = text.split(' ');
-        if (parts.length < 2) return ctx.reply("⚠️ Usage: `/setup_reddit RSS_URL`", { parse_mode: 'Markdown' });
-        await db.updateRedditConfig(ctx.from.id, parts[1]);
-        return ctx.reply("✅ <b>Reddit Configured!</b>\nStatus: ON\nInterval: 2 mins", { parse_mode: 'HTML' });
-    }
-    if (text === '/reddit_on') {
-        await db.toggleRedditMode(ctx.from.id, true);
-        return ctx.reply("🟢 <b>Reddit Feed: ON</b>", { parse_mode: 'HTML' });
-    }
-    if (text === '/reddit_off') {
-        await db.toggleRedditMode(ctx.from.id, false);
-        return ctx.reply("🔴 <b>Reddit Feed: OFF</b>", { parse_mode: 'HTML' });
-    }
-    if (text.startsWith('/reddit_interval')) {
-        const parts = text.split(' ');
-        const mins = parseInt(parts[1]);
-        if (!mins || mins < 1) return ctx.reply("⚠️ Usage: `/reddit_interval 10` (Min 1)", { parse_mode: 'Markdown' });
-        await db.setRedditInterval(ctx.from.id, mins);
-        return ctx.reply(`⏱️ <b>Interval Updated!</b>\nChecking every ${mins} minutes.`, { parse_mode: 'HTML' });
-    }
-
-    // Other Configs
     if (text.startsWith('/set_destination')) {
         let targetId = ctx.chat.id;
         let title = ctx.chat.title || "Private Chat";
@@ -132,8 +58,23 @@ const handleConfig = async (ctx) => {
         const parts = text.split(' ');
         if (parts.length < 3) return ctx.reply("⚠️ Usage: `/setup_api KEY USER`", { parse_mode: 'Markdown' });
         await db.updateApiConfig(ctx.from.id, parts[1], parts[2]);
-        return ctx.reply("✅ <b>API Configured!</b>", { parse_mode: 'HTML' });
+        return ctx.reply("✅ <b>Twitter API Configured!</b>", { parse_mode: 'HTML' });
     }
+    if (text.startsWith('/setup_reddit')) {
+        const parts = text.split(' ');
+        if (parts.length < 2) return ctx.reply("⚠️ Usage: `/setup_reddit RSS_URL`", { parse_mode: 'Markdown' });
+        await db.updateRedditConfig(ctx.from.id, parts[1]);
+        return ctx.reply("✅ <b>Reddit Feed Configured!</b>", { parse_mode: 'HTML' });
+    }
+    if (text.startsWith('/reddit_interval')) {
+        const parts = text.split(' ');
+        const mins = parseInt(parts[1]);
+        if (!mins || mins < 1) return ctx.reply("⚠️ Usage: `/reddit_interval 10`", { parse_mode: 'Markdown' });
+        await db.setRedditInterval(ctx.from.id, mins);
+        return ctx.reply(`⏱️ Interval: ${mins} mins`, { parse_mode: 'HTML' });
+    }
+    if (text === '/reddit_on') { await db.toggleRedditMode(ctx.from.id, true); return ctx.reply("🟢 Reddit: ON", { parse_mode: 'HTML' }); }
+    if (text === '/reddit_off') { await db.toggleRedditMode(ctx.from.id, false); return ctx.reply("🔴 Reddit: OFF", { parse_mode: 'HTML' }); }
     if (text.startsWith('/mode')) {
         const mode = text.split(' ')[1];
         await db.toggleMode(ctx.from.id, mode);
@@ -251,21 +192,48 @@ const handleMessage = async (ctx) => {
         let media = null;
         let platformName = 'Social';
 
-        if (fullUrl.includes('x.com') || fullUrl.includes('twitter.com')) {
-            platformName = 'Twitter';
+        // ✅ UPDATED LOGIC: USE YT-DLP FIRST FOR REDDIT TOO
+        if (fullUrl.includes('x.com') || fullUrl.includes('twitter.com') || fullUrl.includes('reddit.com')) {
+            platformName = fullUrl.includes('reddit') ? 'Reddit' : 'Twitter';
             try {
+                // Try Cookie Fetch First (Gets Real Thumbnail)
                 const info = await downloader.getInfo(fullUrl);
-                media = { title: info.title || 'Twitter Media', author: info.uploader || 'Twitter User', source: fullUrl, type: 'video', url: fullUrl, thumbnail: info.thumbnail, formats: info.formats || [] };
-            } catch (e) { media = await twitterService.extract(fullUrl); }
-        } else if (fullUrl.includes('reddit.com')) {
-            media = await redditService.extract(fullUrl);
-            platformName = 'Reddit';
-        } else {
+                
+                // If it's a Reddit Gallery (playlist), info._type will be 'playlist'
+                if (info._type === 'playlist' && info.entries) {
+                    throw new Error("Gallery detected, fallback to scraper");
+                }
+
+                media = { 
+                    title: info.title || `${platformName} Media`, 
+                    author: info.uploader || 'User', 
+                    source: fullUrl, 
+                    type: 'video', 
+                    url: fullUrl, 
+                    thumbnail: info.thumbnail, 
+                    formats: info.formats || [] 
+                };
+                
+                // If image (no formats)
+                if (!info.formats && (info.ext === 'jpg' || info.ext === 'png')) {
+                    media.type = 'image';
+                    media.url = info.url;
+                }
+
+            } catch (e) {
+                // Fallback to Scraper if yt-dlp fails (e.g. Gallery)
+                console.log(`${platformName} cookie fetch failed, using scraper...`);
+                if (platformName === 'Twitter') media = await twitterService.extract(fullUrl);
+                else media = await redditService.extract(fullUrl);
+            }
+        } 
+        else {
+            // Instagram / TikTok
             if (fullUrl.includes('instagram.com')) platformName = 'Instagram';
             if (fullUrl.includes('tiktok.com')) platformName = 'TikTok';
             try {
                 const info = await downloader.getInfo(fullUrl);
-                media = { title: info.title || 'Social Video', author: info.uploader || 'User', source: fullUrl, type: 'video', url: fullUrl, thumbnail: info.thumbnail, formats: info.formats || [] };
+                media = { title: info.title || 'Video', author: info.uploader || 'User', source: fullUrl, type: 'video', url: fullUrl, thumbnail: info.thumbnail, formats: info.formats || [] };
             } catch (e) { media = { title: 'Video', author: 'User', source: fullUrl, type: 'video', formats: [] }; }
         }
 
@@ -273,6 +241,7 @@ const handleMessage = async (ctx) => {
 
         const prettyCaption = generateCaption(postText || media.title, platformName, media.source, flagEmoji);
 
+        // Buttons
         const buttons = [];
         if (media.type === 'video') {
             if (media.formats && media.formats.length > 0) {
