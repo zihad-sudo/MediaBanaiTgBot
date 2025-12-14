@@ -4,7 +4,8 @@
   "description": "Professional Reddit & Twitter Downloader",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+   "postinstall": "pip3 install -r autoforward/requirements.txt"
   },
   "dependencies": {
     "telegraf": "^4.16.3",
