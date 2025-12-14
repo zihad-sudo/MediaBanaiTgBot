@@ -15,7 +15,7 @@ const {
     handleStart, 
     handleHelp, 
     handleConfig,
-    handleEditCaption // ✅ Import new handler
+    handleEditCaption,handleRun // ✅ Import new handler
 } = require('./src/utils/handlers');
 
 const { handleStats, handleBroadcast } = require('./src/utils/admin'); 
@@ -36,6 +36,7 @@ bot.command('broadcast', handleBroadcast);
 bot.command('setup_api', handleConfig);
 bot.command('mode', handleConfig);
 bot.command('set_destination', handleConfig);
+bot.command('run', handleRun);
 
 // --- MESSAGE LOGIC ---
 bot.on('text', async (ctx, next) => {
